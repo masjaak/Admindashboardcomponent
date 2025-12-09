@@ -1352,11 +1352,7 @@ export default function HouseApp() {
               alt="Ciputra Logo" 
               className="w-auto h-16 object-contain"
             />
-            <div>
-              <h1 className="font-serif font-bold text-lg leading-tight text-slate-900">Ciputra</h1>
-              <span className="text-xs text-slate-400 font-medium tracking-wide uppercase">House App</span>
             </div>
-          </div>
         </div>
 
         <nav className="flex-1 px-4 space-y-1">
