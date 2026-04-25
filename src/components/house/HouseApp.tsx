@@ -310,6 +310,8 @@ export default function HouseApp() {
   const [authError, setAuthError] = useState('');
   const [loginForm, setLoginForm] = useState({ credential: '', password: '' });
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
   const [activeTab, setActiveTab] = useState<AdminTab>('orders');
 
   // Data
@@ -629,120 +631,176 @@ export default function HouseApp() {
   /* ── Login ── */
   if (!identity) {
     return (
-      <div className="min-h-screen bg-[#f4f3f1] font-['Manrope'] text-[#1a1c1b] flex flex-col lg:flex-row">
+      <div className="relative min-h-screen font-['Manrope'] flex items-center justify-center overflow-hidden">
 
-        {/* Left — editorial brand panel */}
-        <div className="relative hidden lg:flex flex-col justify-between flex-1 bg-[#1a1c1b] px-16 py-16 overflow-hidden">
-          {/* Background texture rings */}
-          <div className="pointer-events-none absolute inset-0">
-            <div className="absolute -top-32 -left-32 w-[600px] h-[600px] rounded-full border border-[#c5a059]/10" />
-            <div className="absolute -top-16 -left-16 w-[500px] h-[500px] rounded-full border border-[#c5a059]/8" />
-            <div className="absolute bottom-0 right-0 w-[400px] h-[400px] rounded-full border border-[#c5a059]/6 translate-x-1/3 translate-y-1/3" />
-          </div>
+        {/* Full-screen background: hotel lobby image + warm overlay */}
+        <div className="absolute inset-0 z-0">
+          <div
+            className="absolute inset-0 bg-cover bg-center"
+            style={{
+              backgroundImage: `url('https://lh3.googleusercontent.com/aida-public/AB6AXuCWL_a1MEzQsNxi6caSoxN25GePda4Y-AYSVFBiUFV5gCQNr4-P7sUPPyV6OfoO4LqjRAR5UhmqIonXT6r5T9HvyKWfm9tlMqNFwP62Dcuyhtd0cg-9Uxbcqae6CApk4TzWi_zOiC0r_hCRhGIlATcTgmU6b_mQbLL1UDRghfD97jmHEIh8_1PRHsCO7_dG8MWgemMGuAXxm16SMsMxYMvrZGasddrV9xLRqzji141r_YuR7bpE_m8vfinbz2gOHZxaNJduhNJFlw')`,
+            }}
+          />
+          {/* Dark warm multiply overlay */}
+          <div className="absolute inset-0 bg-[#2f3130]/60 backdrop-blur-sm" style={{ mixBlendMode: 'multiply' }} />
+          {/* Subtle gradient from bottom */}
+          <div className="absolute inset-0 bg-gradient-to-t from-[#faf9f7]/40 to-transparent" />
+        </div>
 
-          {/* Top: wordmark */}
-          <div className="relative z-10">
-            <div className="flex items-center gap-3 mb-16">
-              <div className="flex h-8 w-8 items-center justify-center rounded bg-[#c5a059]/20">
-                <UtensilsCrossed className="h-4 w-4 text-[#c5a059]" />
-              </div>
-              <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.35em] text-[#c5a059] font-semibold">
+        {/* Centered login card */}
+        <div className="relative z-10 w-full max-w-md px-6 py-12 md:p-10">
+          <div
+            className="bg-white rounded-xl p-8 md:p-12"
+            style={{ boxShadow: '0 20px 40px rgba(26, 28, 27, 0.08)' }}
+          >
+            {/* Branding */}
+            <div className="text-center mb-10">
+              <h1 className="font-['Noto_Serif'] text-2xl tracking-[0.2em] uppercase text-[#775a19] mb-3">
                 Atelier Meridian
+              </h1>
+              <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]">
+                In-Room Dining Dashboard
               </p>
             </div>
 
-            <h1 className="font-['Noto_Serif'] text-5xl leading-tight text-white tracking-tight">
-              In-Room Dining<br />
-              <span className="text-[#c5a059]">Operations</span>
-            </h1>
-            <p className="mt-6 font-['Manrope'] text-sm leading-7 text-white/50 max-w-xs">
-              Live orders, menu readiness, shift handover, and daily revenue — built for tablet-first staff workflow.
-            </p>
-          </div>
+            {/* Form */}
+            <form className="space-y-5" onSubmit={handleLogin}>
 
-          {/* Bottom: capability cards */}
-          <div className="relative z-10 grid grid-cols-2 gap-3">
-            {[
-              { label: 'Live Orders', desc: 'Realtime guest requests with SLA tracking' },
-              { label: 'Menu Manager', desc: 'Toggle availability per shift' },
-              { label: 'Shift Handover', desc: 'Leave notes for incoming staff' },
-              { label: 'Revenue Export', desc: 'Daily summary to Excel' },
-            ].map((card) => (
-              <div key={card.label} className="bg-white/5 border border-white/8 rounded p-4">
-                <p className="font-['Manrope'] text-xs font-semibold text-[#c5a059]">{card.label}</p>
-                <p className="mt-1 font-['Manrope'] text-xs text-white/40 leading-5">{card.desc}</p>
+              {/* Staff ID / Email — floating label */}
+              <div className="relative">
+                <input
+                  id="credential"
+                  type="text"
+                  placeholder="Staff ID / Email"
+                  autoComplete="username"
+                  value={loginForm.credential}
+                  onChange={(e) => setLoginForm((c) => ({ ...c, credential: e.target.value }))}
+                  className="peer w-full bg-[#e9e8e6] border-none rounded-sm px-4 pt-6 pb-2 font-['Manrope'] text-sm text-[#1a1c1b] focus:bg-white focus:ring-1 focus:ring-[#d1c5b4] focus:outline-none transition-colors duration-300 placeholder-transparent"
+                />
+                <label
+                  htmlFor="credential"
+                  className="absolute left-4 top-4 font-['Manrope'] text-sm text-[#4e4639] pointer-events-none transition-all duration-300
+                    peer-placeholder-shown:top-4 peer-placeholder-shown:text-sm
+                    peer-focus:top-2 peer-focus:text-[10px] peer-focus:text-[#775a19] peer-focus:tracking-[0.15em] peer-focus:uppercase
+                    peer-not-placeholder-shown:top-2 peer-not-placeholder-shown:text-[10px] peer-not-placeholder-shown:tracking-[0.15em] peer-not-placeholder-shown:uppercase peer-not-placeholder-shown:text-[#775a19]"
+                >
+                  Staff ID / Email
+                </label>
               </div>
+
+              {/* Password — floating label + reveal toggle */}
+              <div className="relative">
+                <input
+                  id="password"
+                  type={showPassword ? 'text' : 'password'}
+                  placeholder="Secure Password"
+                  autoComplete="current-password"
+                  value={loginForm.password}
+                  onChange={(e) => setLoginForm((c) => ({ ...c, password: e.target.value }))}
+                  className="peer w-full bg-[#e9e8e6] border-none rounded-sm px-4 pt-6 pb-2 pr-12 font-['Manrope'] text-sm text-[#1a1c1b] focus:bg-white focus:ring-1 focus:ring-[#d1c5b4] focus:outline-none transition-colors duration-300 placeholder-transparent"
+                />
+                <label
+                  htmlFor="password"
+                  className="absolute left-4 top-4 font-['Manrope'] text-sm text-[#4e4639] pointer-events-none transition-all duration-300
+                    peer-placeholder-shown:top-4 peer-placeholder-shown:text-sm
+                    peer-focus:top-2 peer-focus:text-[10px] peer-focus:text-[#775a19] peer-focus:tracking-[0.15em] peer-focus:uppercase
+                    peer-not-placeholder-shown:top-2 peer-not-placeholder-shown:text-[10px] peer-not-placeholder-shown:tracking-[0.15em] peer-not-placeholder-shown:uppercase peer-not-placeholder-shown:text-[#775a19]"
+                >
+                  Secure Password
+                </label>
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() => setShowPassword((v) => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[#4e4639] hover:text-[#775a19] transition-colors p-1"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                >
+                  {showPassword ? (
+                    /* eye-off */
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+                      <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+                      <line x1="1" y1="1" x2="23" y2="23"/>
+                    </svg>
+                  ) : (
+                    /* eye */
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                      <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                  )}
+                </button>
+              </div>
+
+              {/* Remember me + Forgot password */}
+              <div className="flex items-center justify-between pt-1">
+                <label className="flex items-center gap-2.5 cursor-pointer group">
+                  <div className="relative flex items-center justify-center w-5 h-5">
+                    <input
+                      type="checkbox"
+                      checked={rememberMe}
+                      onChange={(e) => setRememberMe(e.target.checked)}
+                      className="peer appearance-none w-5 h-5 border border-[#d1c5b4] rounded-sm checked:bg-[#775a19] checked:border-[#775a19] transition-all duration-200 cursor-pointer"
+                    />
+                    <svg
+                      className="absolute h-3 w-3 text-white opacity-0 peer-checked:opacity-100 pointer-events-none transition-opacity duration-200"
+                      viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                    >
+                      <polyline points="2 6 5 9 10 3" />
+                    </svg>
+                  </div>
+                  <span className="font-['Manrope'] text-sm text-[#4e4639] group-hover:text-[#1a1c1b] transition-colors">
+                    Remember Me
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  className="font-['Manrope'] text-sm text-[#775a19] hover:text-[#c5a059] underline underline-offset-4 decoration-[#775a19]/30 hover:decoration-[#c5a059] transition-colors"
+                >
+                  Forgot Password?
+                </button>
+              </div>
+
+              {/* Error */}
+              {authError ? (
+                <div className="flex items-start gap-3 bg-[#ffdad6] px-4 py-3 rounded-sm">
+                  <AlertTriangle className="h-3.5 w-3.5 text-[#ba1a1a] mt-0.5 shrink-0" />
+                  <p className="font-['Manrope'] text-xs text-[#ba1a1a]">{authError}</p>
+                </div>
+              ) : null}
+
+              {/* Submit — gold gradient button */}
+              <div className="pt-5">
+                <button
+                  type="submit"
+                  disabled={isLoggingIn}
+                  className="w-full text-white font-['Manrope'] font-medium text-sm tracking-wider uppercase py-4 rounded-sm transition-opacity hover:opacity-90 active:scale-[0.99] disabled:opacity-50"
+                  style={{ background: 'linear-gradient(to right, #775a19, #c5a059)', boxShadow: '0 4px 16px rgba(119, 90, 25, 0.25)' }}
+                >
+                  {isLoggingIn ? 'Signing in…' : 'Access Dashboard'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <footer className="fixed bottom-0 w-full flex flex-col md:flex-row justify-between items-center px-12 py-6 z-20">
+          <p className="font-['Manrope'] text-[10px] uppercase tracking-widest text-white/30 mb-3 md:mb-0">
+            © 2025 Atelier Meridian. All rights reserved.
+          </p>
+          <div className="flex gap-6">
+            {['Privacy Policy', 'Terms of Service', 'Support'].map((link) => (
+              <button
+                key={link}
+                type="button"
+                className="font-['Manrope'] text-[10px] uppercase tracking-widest text-white/30 hover:text-[#c5a059] underline underline-offset-4 transition-colors"
+              >
+                {link}
+              </button>
             ))}
           </div>
-        </div>
-
-        {/* Right — login form */}
-        <div className="flex flex-1 lg:max-w-[420px] flex-col justify-center px-8 lg:px-14 py-12 bg-[#faf9f7]">
-
-          {/* Mobile wordmark */}
-          <div className="flex items-center gap-2 mb-10 lg:hidden">
-            <div className="flex h-7 w-7 items-center justify-center rounded bg-[#1a1c1b]">
-              <UtensilsCrossed className="h-3.5 w-3.5 text-[#c5a059]" />
-            </div>
-            <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.3em] text-[#775a19] font-semibold">
-              Atelier Meridian
-            </p>
-          </div>
-
-          {/* Heading */}
-          <div className="mb-10">
-            <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.3em] text-[#775a19] font-semibold mb-3">
-              Staff access
-            </p>
-            <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] leading-tight tracking-tight">
-              Welcome back
-            </h2>
-            <p className="mt-3 font-['Manrope'] text-sm leading-6 text-[#4e4639]">
-              Sign in with your operator email and password to enter the dashboard.
-            </p>
-          </div>
-
-          {/* Form */}
-          <form className="space-y-8" onSubmit={handleLogin}>
-            <UnderlineInput
-              id="credential"
-              label="Email"
-              placeholder="manager@freshbloom.app"
-              value={loginForm.credential}
-              onChange={(v) => setLoginForm((c) => ({ ...c, credential: v }))}
-            />
-            <UnderlineInput
-              id="password"
-              label="Password"
-              type="password"
-              placeholder="••••••••"
-              value={loginForm.password}
-              onChange={(v) => setLoginForm((c) => ({ ...c, password: v }))}
-            />
-
-            {authError ? (
-              <div className="flex items-start gap-3 bg-[#ffdad6] px-4 py-3 rounded">
-                <AlertTriangle className="h-3.5 w-3.5 text-[#ba1a1a] mt-0.5 shrink-0" />
-                <p className="font-['Manrope'] text-xs text-[#ba1a1a]">{authError}</p>
-              </div>
-            ) : null}
-
-            <button
-              type="submit"
-              disabled={isLoggingIn}
-              className="w-full bg-[#775a19] text-white font-['Manrope'] text-xs uppercase tracking-[0.25em] font-bold py-4 rounded transition-all hover:bg-[#775a19]/90 shadow-[0_4px_20px_rgba(119,90,25,0.25)] active:scale-[0.99] disabled:opacity-50"
-            >
-              {isLoggingIn ? 'Signing in…' : 'Enter Dashboard'}
-            </button>
-          </form>
-
-          {/* Divider */}
-          <div className="mt-10 pt-8 border-t border-[#d1c5b4]/30">
-            <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639]/50">
-              Secured by Firebase Authentication
-            </p>
-          </div>
-        </div>
+        </footer>
       </div>
     );
   }
