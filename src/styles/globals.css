@@ -1,8 +1,29 @@
 @custom-variant dark (&:is(.dark *));
 
+/* Stitch / Atelier Meridian design tokens */
+@theme inline {
+  --font-headline: 'Noto Serif', serif;
+  --font-body: 'Manrope', sans-serif;
+  --color-am-background: #faf9f7;
+  --color-am-surface: #faf9f7;
+  --color-am-surface-low: #f4f3f1;
+  --color-am-surface-high: #e9e8e6;
+  --color-am-surface-highest: #e3e2e0;
+  --color-am-surface-lowest: #ffffff;
+  --color-am-primary: #775a19;
+  --color-am-primary-container: #c5a059;
+  --color-am-on-primary: #ffffff;
+  --color-am-on-surface: #1a1c1b;
+  --color-am-on-surface-variant: #4e4639;
+  --color-am-secondary: #5f5e5e;
+  --color-am-outline-variant: #d1c5b4;
+  --color-am-error: #ba1a1a;
+  --color-am-error-container: #ffdad6;
+}
+
 :root {
   --font-size: 16px;
-  --background: #ffffff;
+  --background: #faf9f7;
   --foreground: oklch(0.145 0 0);
   --card: #ffffff;
   --card-foreground: oklch(0.145 0 0);

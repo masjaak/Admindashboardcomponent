@@ -1,1451 +1,1351 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { db, auth } from '../../lib/firebase';
-import { collection, onSnapshot, addDoc, updateDoc, doc, deleteDoc, query, orderBy, Timestamp } from 'firebase/firestore';
-import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
-import { toast } from 'sonner@2.0.3';
-import { Toaster } from '../ui/sonner';
-import { useWakeLock } from '../../hooks/useWakeLock';
-import { useDynamicTitle } from '../../hooks/useDynamicTitle';
-import { 
-  Bell, 
-  Utensils, 
-  BarChart, 
-  Settings, 
-  LogOut, 
-  Plus, 
-  Edit2, 
-  Trash2, 
-  CheckCircle, 
-  Clock, 
-  Lock,
-  Users,
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  addDoc,
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  updateDoc,
+} from 'firebase/firestore';
+import { User, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import {
+  AlertTriangle,
+  Bell,
+  CheckCircle2,
+  Clock,
+  Copy,
+  LayoutGrid,
+  LineChart,
+  LogOut,
+  MessageSquare,
+  PencilLine,
+  Plus,
+  QrCode,
+  Search,
+  Settings2,
+  ShieldBan,
+  ShieldCheck,
+  Sparkles,
   Store,
-  TrendingUp,
-  DollarSign,
-  AlertCircle,
-  X,
-  Eye,
-  Download,
-  FileText,
-  ChevronLeft,
-  ChevronRight,
-  Star
+  UserCircle2,
+  UtensilsCrossed,
 } from 'lucide-react';
-import { 
-  BarChart as RechartsBarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer 
-} from 'recharts';
+import { auth, db } from '../../lib/firebase';
+import { createGuestQrToken, revokeGuestSessionAsAdmin } from '../../lib/adminAccess';
+import { useDynamicTitle } from '../../hooks/useDynamicTitle';
+import { useWakeLock } from '../../hooks/useWakeLock';
+import { getNewIncomingOrderIds } from '../../admin/notifications';
+import { buildRevenueExport, summarizeRevenue } from '../../admin/revenue';
+import { resolveAdminSession, type AdminRole } from '../../admin/session';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 
-// --- Types ---
+type AdminTab = 'orders' | 'menu' | 'feedback' | 'revenue' | 'settings';
 
-type Role = 'manager' | 'staff';
-
-interface User {
-  id: string;
-  username: string;
-  pin: string;
-  role: Role;
+interface AdminIdentity {
+  uid: string;
+  email: string;
   name: string;
+  role: AdminRole;
+  hotelId: string;
+  username: string;
 }
 
-interface MenuItem {
+interface MenuProduct {
   id: string;
+  sourceItemId?: string;
   name: string;
   category: string;
   price: number;
   image: string;
-  description?: string;
+  description: string;
   isAvailable: boolean;
+  unavailableReason?: string;
 }
 
-interface OrderItem {
+interface OrderLine {
   id: string;
   name: string;
-  quantity: number;
+  qty: number;
   price: number;
-  note?: string;
+  note: string;
 }
 
-interface Order {
+interface DashboardOrder {
   id: string;
   roomNumber: string;
-  status: 'incoming' | 'kitchen' | 'completed' | 'cancelled';
-  items: OrderItem[];
-  createdAt: any; // Firestore Timestamp
+  lastName: string;
+  phoneNumber: string;
+  status: string;
+  items: OrderLine[];
+  createdAt: Date | null;
   total: number;
-  paymentMethod: 'room' | 'qris' | 'bank';
-  paymentProofUrl?: string;
+  paymentMethod: string;
   isRead: boolean;
-  rating?: number;
-  feedback?: string;
+  guestUid: string;
+  accessTokenId: string;
+  feedbackText: string;
+  feedbackSummary: string;
+  rating: number | null;
+  managerFollowUpRequested: boolean;
 }
 
-interface AppSettings {
-  soundEnabled: boolean;
-  notificationsEnabled: boolean;
-  taxPercentage: number;
-  storeOpen: boolean;
+interface MenuEditorState {
+  id?: string;
+  name: string;
+  category: string;
+  price: string;
+  description: string;
+  image: string;
+  isAvailable: boolean;
+  unavailableReason: string;
 }
 
-// --- Mock Data ---
-
-const MOCK_USERS: User[] = [
-  { id: '1', username: 'admin', pin: '1234', role: 'manager', name: 'Mr. Manager' },
-  { id: '2', username: 'staff', pin: '0000', role: 'staff', name: 'Staff A' }
+const ORDER_STATUSES = [
+  'incoming',
+  'confirmed',
+  'kitchen',
+  'preparing',
+  'quality_check',
+  'delivery',
+  'on_the_way',
+  'delivered',
+  'completed',
+  'cancelled',
 ];
 
-// --- Helper Components ---
-
-const StatusToggle = ({ isAvailable, onToggle }: { isAvailable: boolean; onToggle: () => void }) => (
-  <button 
-    onClick={onToggle}
-    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-hidden focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 ${isAvailable ? 'bg-green-500' : 'bg-slate-300'}`}
-  >
-    <span className="sr-only">Toggle availability</span>
-    <span
-      className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${isAvailable ? 'translate-x-6' : 'translate-x-1'}`}
-    />
-  </button>
-);
-
-const PriceFormatter = ({ price }: { price: number }) => (
-  <span>
-    {new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(price)}
-  </span>
-);
-
-const RestrictedAccess = () => (
-  <div className="flex flex-col items-center justify-center h-full text-slate-400">
-    <div className="bg-slate-100 p-6 rounded-full mb-4">
-      <Lock size={48} className="text-slate-400" />
-    </div>
-    <h3 className="font-serif text-xl font-bold text-slate-700 mb-2">Access Restricted</h3>
-    <p className="text-slate-500 max-w-sm text-center">
-      You do not have permission to view this section. Please contact your manager if you believe this is an error.
-    </p>
-  </div>
-);
-
-// --- View Components ---
-
-const LoginScreen = () => {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError('');
-
-    try {
-      await signInWithEmailAndPassword(auth, email, password);
-    } catch (err: any) {
-      console.error("Login failed", err);
-      setError('Login failed. Please check your credentials.');
-      setPassword('');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="h-screen w-full flex items-center justify-center bg-slate-50">
-      <div className="w-full max-w-md bg-white p-8 rounded-2xl shadow-xl border border-slate-100">
-        <div className="flex justify-center mb-8">
-          <img 
-            src="https://i.ibb.co.com/c5fhDh6/The-Gallery-Restaurant.png" 
-            alt="Hotel Ciputra" 
-            className="h-24 w-auto object-contain drop-shadow-md"
-          />
-        </div>
-        
-        <h2 className="text-2xl font-serif font-bold text-center text-slate-900 mb-2">Welcome Back</h2>
-        <p className="text-center text-slate-500 mb-8">Enter your email and password to access the House App</p>
-
-        <form onSubmit={handleLogin} className="space-y-4">
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-slate-700">Email Address</label>
-            <Input 
-              type="email" 
-              placeholder="admin@hotel.com" 
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="h-11 bg-slate-50"
-              required
-            />
-          </div>
-          
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-slate-700">Password</label>
-            <Input 
-              type="password" 
-              placeholder="••••••••" 
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="h-11 bg-slate-50"
-              required
-            />
-          </div>
-
-          {error && (
-            <div className="flex items-center gap-2 text-red-600 text-sm bg-red-50 p-3 rounded-lg">
-              <AlertCircle size={16} />
-              {error}
-            </div>
-          )}
-
-          <Button 
-            type="submit" 
-            disabled={loading}
-            className="w-full h-11 bg-orange-600 hover:bg-orange-700 text-white font-medium rounded-xl text-base mt-2"
-          >
-            {loading ? 'Signing in...' : 'Enter Dashboard'}
-          </Button>
-        </form>
-      </div>
-    </div>
-  );
+const STATUS_COLORS: Record<string, string> = {
+  incoming: 'bg-blue-50 text-blue-800',
+  confirmed: 'bg-indigo-50 text-indigo-800',
+  kitchen: 'bg-orange-50 text-orange-800',
+  preparing: 'bg-orange-50 text-orange-800',
+  quality_check: 'bg-purple-50 text-purple-800',
+  delivery: 'bg-yellow-50 text-yellow-800',
+  on_the_way: 'bg-yellow-50 text-yellow-800',
+  delivered: 'bg-emerald-50 text-emerald-800',
+  completed: 'bg-[#e9e8e6] text-[#1a1c1b]',
+  cancelled: 'bg-[#ffdad6] text-[#93000a]',
 };
 
-const MenuManager = () => {
-  const [items, setItems] = useState<MenuItem[]>([]);
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [newItem, setNewItem] = useState<Partial<MenuItem>>({
-    name: '',
-    category: 'Main Course',
-    price: 0,
-    description: '',
-    image: '',
-    isAvailable: true
-  });
+function normalizeRole(role: unknown): AdminRole {
+  return role === 'staff' ? 'staff' : 'manager';
+}
 
-  useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, "products"), (snapshot) => {
-      const fetchedItems = snapshot.docs.map(doc => ({ 
-        id: doc.id, 
-        ...doc.data() 
-      })) as MenuItem[];
-      setItems(fetchedItems);
-    });
-    return () => unsubscribe();
-  }, []);
+function formatIdr(value: number): string {
+  return new Intl.NumberFormat('id-ID', {
+    style: 'currency',
+    currency: 'IDR',
+    minimumFractionDigits: 0,
+  }).format(value);
+}
 
-  const toggleStatus = async (id: string, currentStatus: boolean) => {
-    try {
-      await updateDoc(doc(db, "products", id), { isAvailable: !currentStatus });
-    } catch (error) {
-      console.error('Error toggling status:', error);
-      toast.error('Failed to update status');
-    }
+function normalizeProduct(docId: string, data: Record<string, unknown>): MenuProduct {
+  return {
+    id: docId,
+    sourceItemId: typeof data.sourceItemId === 'string' ? data.sourceItemId : undefined,
+    name: typeof data.name === 'string' ? data.name : 'Untitled item',
+    category: typeof data.category === 'string' ? data.category : 'Mains',
+    price: typeof data.price === 'number' ? data.price : 0,
+    image: typeof data.image === 'string' ? data.image : '',
+    description: typeof data.description === 'string' ? data.description : '',
+    isAvailable: data.isAvailable !== false,
+    unavailableReason: typeof data.unavailableReason === 'string' ? data.unavailableReason : '',
   };
+}
 
-  const deleteItem = async (id: string) => {
-    try {
-      if (confirm('Are you sure you want to delete this item?')) {
-        await deleteDoc(doc(db, "products", id));
-        toast.success('Item deleted');
-      }
-    } catch (error) {
-      console.error('Error deleting item:', error);
-      toast.error('Failed to delete item');
-    }
-  };
+function normalizeOrder(docId: string, data: Record<string, unknown>): DashboardOrder {
+  const feedbackDetails = typeof data.feedbackDetails === 'object' && data.feedbackDetails ? data.feedbackDetails as Record<string, unknown> : null;
+  const rawItems = Array.isArray(data.items) ? data.items : [];
 
-  const handleSaveItem = async () => {
-    if (!newItem.name || !newItem.price) {
-      toast.error('Please fill in name and price');
-      return;
-    }
-    
-    try {
-      const itemData = {
-        name: newItem.name,
-        category: newItem.category || 'Main Course',
-        price: Number(newItem.price),
-        description: newItem.description || '',
-        image: newItem.image || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&q=80&w=200',
+  return {
+    id: docId,
+    roomNumber: typeof data.roomNumber === 'string' ? data.roomNumber : 'Unknown',
+    lastName: typeof data.lastName === 'string' ? data.lastName : '',
+    phoneNumber: typeof data.phoneNumber === 'string' ? data.phoneNumber : '',
+    status: typeof data.status === 'string' ? data.status : 'incoming',
+    items: rawItems.map((item, index) => {
+      const row = (item && typeof item === 'object') ? item as Record<string, unknown> : {};
+      return {
+        id: typeof row.id === 'string' ? row.id : `${docId}-${index}`,
+        name: typeof row.name === 'string' ? row.name : 'Unknown item',
+        qty: typeof row.qty === 'number' ? row.qty : typeof row.quantity === 'number' ? row.quantity : 1,
+        price: typeof row.price === 'number' ? row.price : 0,
+        note: typeof row.note === 'string' ? row.note : '',
       };
-
-      if (newItem.id) {
-        await updateDoc(doc(db, "products", newItem.id), itemData);
-        toast.success('Item updated successfully');
-      } else {
-        await addDoc(collection(db, "products"), {
-          ...itemData,
-          isAvailable: true,
-          createdAt: new Date()
-        });
-        toast.success('Item created successfully');
-      }
-
-      setIsAddModalOpen(false);
-      setNewItem({ name: '', category: 'Main Course', price: 0, description: '', image: '', isAvailable: true });
-    } catch (error) {
-      console.error('Error saving item:', error);
-      toast.error('Failed to save item');
-    }
+    }),
+    createdAt: data.createdAt && typeof data.createdAt === 'object' && 'toDate' in data.createdAt
+      ? (data.createdAt as { toDate: () => Date }).toDate()
+      : null,
+    total: typeof data.total === 'number' ? data.total : 0,
+    paymentMethod: typeof data.paymentMethod === 'string' ? data.paymentMethod : 'room',
+    isRead: data.isRead === true,
+    guestUid: typeof data.guestUid === 'string' ? data.guestUid : '',
+    accessTokenId: typeof data.accessTokenId === 'string' ? data.accessTokenId : '',
+    feedbackText: feedbackDetails && typeof feedbackDetails.comment === 'string'
+      ? feedbackDetails.comment
+      : typeof data.feedback === 'string'
+        ? data.feedback
+        : '',
+    feedbackSummary: typeof data.reviewSummary === 'string'
+      ? data.reviewSummary
+      : typeof data.feedback === 'string'
+        ? data.feedback
+        : '',
+    rating: feedbackDetails && typeof feedbackDetails.overallRating === 'number'
+      ? feedbackDetails.overallRating
+      : typeof data.rating === 'number'
+        ? data.rating
+        : null,
+    managerFollowUpRequested: feedbackDetails?.requestManagerFollowUp === true || data.requestManagerFollowUp === true || data.requestManagerFollowUp === 'yes',
   };
+}
 
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-serif font-bold text-slate-900">All Menu Items</h2>
-          <p className="text-slate-500 mt-1">Manage your food and beverage catalog</p>
-        </div>
-        <button 
-          onClick={() => {
-            setNewItem({ name: '', category: 'Main Course', price: 0, description: '', image: '', isAvailable: true });
-            setIsAddModalOpen(true);
-          }}
-          className="flex items-center gap-2 bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 rounded-xl transition-colors font-medium shadow-md shadow-orange-200"
-        >
-          <Plus size={18} />
-          Add New Menu
-        </button>
-      </div>
-
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-slate-50 border-b border-slate-100">
-              <tr>
-                <th className="px-6 py-4 font-semibold text-slate-700 font-serif">Product Info</th>
-                <th className="px-6 py-4 font-semibold text-slate-700 font-serif">Price</th>
-                <th className="px-6 py-4 font-semibold text-slate-700 font-serif">Status</th>
-                <th className="px-6 py-4 font-semibold text-slate-700 font-serif text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50">
-              {items.map((item) => (
-                <tr key={item.id} className="hover:bg-slate-50/50 transition-colors group">
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-4">
-                      <img 
-                        src={item.image} 
-                        alt={item.name} 
-                        className="h-12 w-12 rounded-lg object-cover shadow-xs"
-                      />
-                      <div>
-                        <div className="font-bold text-slate-900">{item.name}</div>
-                        <div className="text-xs text-slate-500 mt-0.5">{item.category}</div>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 font-medium text-slate-700">
-                    <PriceFormatter price={item.price} />
-                  </td>
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-3">
-                      <StatusToggle 
-                        isAvailable={item.isAvailable} 
-                        onToggle={() => toggleStatus(item.id, item.isAvailable)} 
-                      />
-                      <span className={`text-xs font-medium ${item.isAvailable ? 'text-green-700 bg-green-50 px-2 py-1 rounded-md' : 'text-red-700 bg-red-50 px-2 py-1 rounded-md'}`}>
-                        {item.isAvailable ? 'Available' : 'Sold Out'}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 text-right">
-                    <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button 
-                        onClick={() => {
-                          setNewItem(item);
-                          setIsAddModalOpen(true);
-                        }}
-                        className="p-2 text-slate-400 hover:text-orange-600 hover:bg-orange-50 rounded-lg transition-colors"
-                      >
-                        <Edit2 size={16} />
-                      </button>
-                      <button 
-                        onClick={() => deleteItem(item.id)}
-                        className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Add Menu Modal */}
-      {isAddModalOpen && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-xl font-bold font-serif">Add New Menu Item</h3>
-              <button onClick={() => setIsAddModalOpen(false)}><X size={20} className="text-slate-400" /></button>
-            </div>
-            <div className="space-y-4">
-              <div>
-                <label className="text-sm font-medium text-slate-700 block mb-1">Item Name</label>
-                <Input value={newItem.name} onChange={e => setNewItem({...newItem, name: e.target.value})} placeholder="e.g. Seafood Fried Rice" />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-sm font-medium text-slate-700 block mb-1">Category</label>
-                  <select 
-                    className="w-full h-10 px-3 rounded-md border border-slate-200 bg-white text-sm"
-                    value={newItem.category}
-                    onChange={e => setNewItem({...newItem, category: e.target.value})}
-                  >
-                    <option value="Main Course">Main Course</option>
-                    <option value="Appetizer">Appetizer</option>
-                    <option value="Western">Western</option>
-                    <option value="Beverage">Beverage</option>
-                    <option value="Dessert">Dessert</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="text-sm font-medium text-slate-700 block mb-1">Price (IDR)</label>
-                  <Input 
-                    type="number"
-                    value={newItem.price} 
-                    onChange={e => setNewItem({...newItem, price: Number(e.target.value)})} 
-                    placeholder="e.g. 50000" 
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-700 block mb-1">Description</label>
-                <textarea 
-                  className="w-full p-3 bg-white border border-slate-200 rounded-lg text-sm focus:outline-hidden focus:ring-2 focus:ring-orange-500"
-                  rows={3}
-                  value={newItem.description}
-                  onChange={e => setNewItem({...newItem, description: e.target.value})}
-                  placeholder="Describe the dish..."
-                />
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-700 block mb-1">Image URL</label>
-                <Input value={newItem.image} onChange={e => setNewItem({...newItem, image: e.target.value})} placeholder="https://..." />
-                <p className="text-xs text-slate-400 mt-1">Paste a valid image URL for the thumbnail.</p>
-              </div>
-
-              <div className="pt-4 flex gap-3">
-                <Button type="button" variant="outline" className="flex-1" onClick={() => setIsAddModalOpen(false)}>Cancel</Button>
-                <Button onClick={handleSaveItem} className="flex-1 bg-orange-600 hover:bg-orange-700 text-white">Save Item</Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-const LiveOrders = ({ orders }: { orders: Order[] }) => {
-  const [proofUrl, setProofUrl] = useState<string | null>(null);
-
-  const moveOrder = async (id: string, newStatus: Order['status']) => {
-    try {
-      await updateDoc(doc(db, "orders", id), { status: newStatus });
-      toast.success(`Order status updated to ${newStatus}`);
-    } catch (error) {
-      console.error("Failed to update status", error);
-      toast.error("Failed to update order status");
-    }
+function getEditorState(product?: MenuProduct): MenuEditorState {
+  return {
+    id: product?.id,
+    name: product?.name || '',
+    category: product?.category || 'Mains',
+    price: product ? String(product.price) : '',
+    description: product?.description || '',
+    image: product?.image || '',
+    isAvailable: product ? product.isAvailable : true,
+    unavailableReason: product?.unavailableReason || '',
   };
-
-  const isToday = (date: Date) => {
-    const today = new Date();
-    return date.getDate() === today.getDate() &&
-      date.getMonth() === today.getMonth() &&
-      date.getFullYear() === today.getFullYear();
-  };
-
-  const IncomingColumn = orders.filter(o => o.status === 'incoming');
-  const KitchenColumn = orders.filter(o => o.status === 'kitchen');
-  const HistoryColumn = orders.filter(o => {
-    if (o.status !== 'completed') return false;
-    let date: Date | null = null;
-    if (o.createdAt?.toDate) date = o.createdAt.toDate();
-    else if (o.createdAt) date = new Date(o.createdAt);
-    return date ? isToday(date) : false;
-  });
-
-  const handleDownloadProof = () => {
-    if (proofUrl) {
-      const link = document.createElement('a');
-      link.href = proofUrl;
-      link.download = 'payment-proof.jpg';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    }
-  };
-
-  const formatTime = (timestamp: any) => {
-    if (!timestamp) return '';
-    const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
-    const diff = (new Date().getTime() - date.getTime()) / 60000;
-    
-    if (diff < 1) return 'Just now';
-    if (diff < 60) return `${Math.floor(diff)} mins ago`;
-    return `${Math.floor(diff / 60)} hours ago`;
-  };
-
-  const OrderCard = ({ order, showActions = false, isHistory = false }: { order: Order, showActions?: boolean, isHistory?: boolean }) => (
-    <motion.div 
-      layoutId={order.id}
-      className={`bg-white p-5 rounded-xl border border-slate-100 shadow-sm hover:shadow-md transition-shadow mb-4 ${isHistory ? 'opacity-60' : ''}`}
-    >
-      <div className="flex justify-between items-start mb-4">
-        <div>
-          <h3 className="text-lg font-serif font-bold text-slate-900">Room {order.roomNumber}</h3>
-          <div className="flex items-center gap-1.5 text-xs text-slate-500 mt-1">
-            <Clock size={12} />
-            {formatTime(order.createdAt)}
-          </div>
-        </div>
-        <div className="text-right">
-          <div className="font-bold text-orange-600 text-sm">
-            <PriceFormatter price={order.total} />
-          </div>
-          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase ${order.paymentMethod === 'room' ? 'bg-blue-50 text-blue-700' : 'bg-purple-50 text-purple-700'}`}>
-            {order.paymentMethod}
-          </span>
-        </div>
-      </div>
-
-      <div className="space-y-2 mb-4 border-t border-dashed border-slate-100 pt-3">
-        {order.items.map((item, i) => (
-          <div key={i} className="flex flex-col text-sm">
-            <div className="flex justify-between">
-              <span className="text-slate-600"><span className="font-semibold text-slate-900">{item.quantity}x</span> {item.name}</span>
-            </div>
-            {item.note && (
-              <span className="text-xs text-orange-600 italic mt-0.5">"{item.note}"</span>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {order.paymentMethod !== 'room' && order.paymentProofUrl && (
-        <div className="mb-4">
-          <button 
-            onClick={() => setProofUrl(order.paymentProofUrl!)}
-            className="w-full flex items-center justify-center gap-2 text-xs font-bold text-slate-600 bg-slate-100 py-2 rounded-lg hover:bg-slate-200 transition-colors"
-          >
-            <Eye size={14} /> View Payment Proof
-          </button>
-        </div>
-      )}
-
-      {showActions && (
-        <div className="pt-3 border-t border-slate-100 flex gap-2">
-          {order.status === 'incoming' && (
-            <button 
-              onClick={() => moveOrder(order.id, 'kitchen')}
-              className="w-full bg-orange-600 hover:bg-orange-700 text-white text-sm font-medium py-2 rounded-lg transition-colors"
-            >
-              Accept Order
-            </button>
-          )}
-          {order.status === 'kitchen' && (
-            <button 
-              onClick={() => moveOrder(order.id, 'completed')}
-              className="w-full bg-green-600 hover:bg-green-700 text-white text-sm font-medium py-2 rounded-lg transition-colors flex items-center justify-center gap-2"
-            >
-              <CheckCircle size={16} />
-              Mark Ready
-            </button>
-          )}
-        </div>
-      )}
-    </motion.div>
-  );
-
-  return (
-    <>
-      <div className="h-full flex gap-6 overflow-x-auto pb-4">
-        {/* Column 1: Incoming */}
-        <div className="flex-1 min-w-[300px]">
-          <div className="flex items-center justify-between mb-4 px-1">
-            <h3 className="font-serif font-bold text-slate-800 flex items-center gap-2">
-              Incoming
-              <span className="bg-orange-100 text-orange-700 text-xs px-2 py-0.5 rounded-full font-sans font-bold">{IncomingColumn.length}</span>
-            </h3>
-          </div>
-          <div className="bg-slate-100/50 p-3 rounded-2xl min-h-[500px]">
-            {IncomingColumn.map(order => (
-              <OrderCard key={order.id} order={order} showActions />
-            ))}
-          </div>
-        </div>
-
-        {/* Column 2: Kitchen */}
-        <div className="flex-1 min-w-[300px]">
-          <div className="flex items-center justify-between mb-4 px-1">
-            <h3 className="font-serif font-bold text-slate-800 flex items-center gap-2">
-              Kitchen
-              <span className="bg-blue-100 text-blue-700 text-xs px-2 py-0.5 rounded-full font-sans font-bold">{KitchenColumn.length}</span>
-            </h3>
-          </div>
-          <div className="bg-slate-100/50 p-3 rounded-2xl min-h-[500px]">
-            {KitchenColumn.map(order => (
-              <OrderCard key={order.id} order={order} showActions />
-            ))}
-          </div>
-        </div>
-
-        {/* Column 3: History (Completed Today) */}
-        <div className="flex-1 min-w-[300px]">
-          <div className="flex items-center justify-between mb-4 px-1">
-            <h3 className="font-serif font-bold text-slate-400 flex items-center gap-2">
-              History <span className="text-xs font-normal">(Today)</span>
-            </h3>
-          </div>
-          <div className="bg-slate-50 border-2 border-dashed border-slate-200 p-3 rounded-2xl min-h-[500px]">
-            {HistoryColumn.map(order => (
-              <OrderCard key={order.id} order={order} isHistory />
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Payment Proof Modal */}
-      {proofUrl && (
-        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4" onClick={() => setProofUrl(null)}>
-          <div className="bg-white rounded-2xl p-2 max-w-2xl w-full relative" onClick={e => e.stopPropagation()}>
-            <div className="absolute top-4 right-4 flex gap-2">
-              <button 
-                onClick={handleDownloadProof}
-                className="bg-white/90 p-2 rounded-full text-slate-700 hover:text-green-600 shadow-sm"
-              >
-                <Download size={20} />
-              </button>
-              <button onClick={() => setProofUrl(null)} className="bg-white/90 p-2 rounded-full text-slate-700 hover:text-red-600 shadow-sm">
-                <X size={20} />
-              </button>
-            </div>
-            <img src={proofUrl} alt="Payment Proof" className="w-full h-auto rounded-xl max-h-[80vh] object-contain bg-slate-100" />
-            <div className="p-4 text-center">
-              <p className="font-bold text-slate-700">Payment Proof</p>
-              <p className="text-xs text-slate-500">Verify the transfer amount and details</p>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
-  );
-};
-
-const ReviewsView = ({ orders }: { orders: Order[] }) => {
-  const reviews = useMemo(() => {
-    return orders
-      .filter(o => (o.rating || 0) > 0)
-      .sort((a, b) => {
-         const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt);
-         const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt);
-         return dateB.getTime() - dateA.getTime();
-      });
-  }, [orders]);
-
-  const averageRating = useMemo(() => {
-    if (reviews.length === 0) return 0;
-    const total = reviews.reduce((acc, curr) => acc + (curr.rating || 0), 0);
-    return (total / reviews.length).toFixed(1);
-  }, [reviews]);
-
-  const StarRating = ({ rating }: { rating: number }) => (
-    <div className="flex gap-0.5">
-      {[1, 2, 3, 4, 5].map((star) => (
-        <Star 
-          key={star} 
-          size={14} 
-          className={star <= rating ? "fill-yellow-400 text-yellow-400" : "text-slate-300"} 
-        />
-      ))}
-    </div>
-  );
-
-  return (
-    <div className="space-y-6">
-      {/* KPI Header */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between">
-            <div>
-                <p className="text-slate-500 text-sm font-medium">Average Rating</p>
-                <div className="flex items-center gap-3 mt-1">
-                    <span className="text-3xl font-bold text-slate-900">{averageRating}</span>
-                    <StarRating rating={Math.round(Number(averageRating))} />
-                </div>
-            </div>
-            <div className="h-12 w-12 bg-yellow-50 rounded-full flex items-center justify-center text-yellow-600">
-                <Star size={24} className="fill-current" />
-            </div>
-        </div>
-        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between">
-            <div>
-                <p className="text-slate-500 text-sm font-medium">Total Reviews</p>
-                 <div className="flex items-center gap-3 mt-1">
-                    <span className="text-3xl font-bold text-slate-900">{reviews.length}</span>
-                </div>
-            </div>
-             <div className="h-12 w-12 bg-blue-50 rounded-full flex items-center justify-center text-blue-600">
-                <Users size={24} />
-            </div>
-        </div>
-      </div>
-
-      {/* Reviews List */}
-      <div>
-        <h3 className="text-lg font-serif font-bold text-slate-900 mb-4">Recent Feedback</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {reviews.map(review => (
-                <div key={review.id} className="bg-white p-5 rounded-xl border border-slate-100 shadow-sm">
-                    <div className="flex justify-between items-start mb-3">
-                        <div>
-                            <div className="font-bold text-slate-900">Room {review.roomNumber}</div>
-                            <div className="text-xs text-slate-500">
-                                {review.createdAt?.toDate ? review.createdAt.toDate().toLocaleDateString() : 'Unknown Date'}
-                            </div>
-                        </div>
-                        <StarRating rating={review.rating || 0} />
-                    </div>
-                    
-                    <p className="text-sm text-slate-600 mb-4 bg-slate-50 p-3 rounded-lg italic">
-                        "{review.feedback || "No comment provided"}"
-                    </p>
-
-                    <div className="text-xs text-slate-500 border-t border-slate-50 pt-3">
-                        <span className="font-medium">Ordered:</span> {review.items.map(i => `${i.quantity}x ${i.name}`).join(', ')}
-                    </div>
-                </div>
-            ))}
-            {reviews.length === 0 && (
-                <div className="col-span-full text-center py-12 text-slate-400">
-                    No reviews yet.
-                </div>
-            )}
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const SalesReport = ({ user, orders }: { user: User, orders: Order[] }) => {
-  if (user.role !== 'manager') return <RestrictedAccess />;
-
-  const [timeFilter, setTimeFilter] = useState<'daily' | 'weekly' | 'monthly' | 'yearly'>('daily');
-  const [selectedDate, setSelectedDate] = useState(new Date());
-
-  // Compute Dashboard Data
-  const dashboardData = useMemo(() => {
-    if (!orders.length) return { 
-      kpi: { revenue: 0, count: 0, avg: 0, cancelled: 0 }, 
-      chart: [],
-      topItems: [] 
-    };
-
-    // 1. Define Filter Range
-    const start = new Date(selectedDate);
-    const end = new Date(selectedDate);
-    
-    // Normalize to start of day
-    start.setHours(0,0,0,0);
-    end.setHours(23,59,59,999);
-
-    if (timeFilter === 'weekly') {
-      const day = start.getDay();
-      const diff = start.getDate() - day + (day === 0 ? -6 : 1);
-      start.setDate(diff);
-      end.setDate(start.getDate() + 6);
-    } else if (timeFilter === 'monthly') {
-      start.setDate(1);
-      end.setMonth(start.getMonth() + 1, 0);
-    } else if (timeFilter === 'yearly') {
-      start.setMonth(0, 1);
-      end.setMonth(11, 31);
-    }
-
-    // 2. Filter Orders
-    const filteredOrders = orders.filter(o => {
-      let date: Date;
-      if (o.createdAt?.toDate) {
-        date = o.createdAt.toDate();
-      } else if (o.createdAt) {
-        date = new Date(o.createdAt);
-      } else {
-        return false;
-      }
-      return date >= start && date <= end;
-    });
-
-    // 3. Calculate KPIs
-    let revenue = 0;
-    let count = 0;
-    let cancelled = 0;
-    const itemMap = new Map<string, number>();
-
-    filteredOrders.forEach(o => {
-      if (o.status === 'cancelled') {
-        cancelled++;
-      } else {
-        revenue += (Number(o.total) || 0);
-        count++;
-
-        if (o.items && Array.isArray(o.items)) {
-          o.items.forEach((item: any) => {
-            const current = itemMap.get(item.name) || 0;
-            itemMap.set(item.name, current + (item.quantity || 1));
-          });
-        }
-      }
-    });
-
-    const avg = count > 0 ? revenue / count : 0;
-
-    // 4. Prepare Chart Data
-    const chartMap = new Map<string, number>();
-    
-    if (timeFilter === 'daily') {
-      for(let i=0; i<24; i++) chartMap.set(i.toString().padStart(2, '0') + ':00', 0);
-    } else if (timeFilter === 'weekly') {
-      ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].forEach(d => chartMap.set(d, 0));
-    } else if (timeFilter === 'monthly') {
-      for(let i=1; i<=31; i++) chartMap.set(i.toString(), 0);
-    } else {
-      ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].forEach(m => chartMap.set(m, 0));
-    }
-
-    filteredOrders.forEach(o => {
-      if (o.status === 'cancelled') return;
-      
-      let date: Date;
-      if (o.createdAt?.toDate) date = o.createdAt.toDate();
-      else if (o.createdAt) date = new Date(o.createdAt);
-      else return;
-
-      const val = (Number(o.total) || 0);
-      let key = '';
-
-      if (timeFilter === 'daily') {
-        key = date.getHours().toString().padStart(2, '0') + ':00';
-      } else if (timeFilter === 'weekly') {
-        key = new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(date);
-      } else if (timeFilter === 'monthly') {
-        key = date.getDate().toString();
-      } else {
-        key = new Intl.DateTimeFormat('en-US', { month: 'short' }).format(date);
-      }
-
-      if (chartMap.has(key)) {
-        chartMap.set(key, chartMap.get(key)! + val);
-      }
-    });
-
-    const chart = Array.from(chartMap.entries()).map(([label, value]) => ({ label, value }));
-
-    // 5. Top Items
-    const topItems = Array.from(itemMap.entries())
-      .map(([name, count]) => ({ name, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 5);
-      
-    const maxCount = topItems.length > 0 ? topItems[0].count : 1;
-    const topItemsWithPct = topItems.map(i => ({ ...i, pct: (i.count / maxCount) * 100 }));
-
-    return {
-      kpi: { revenue, count, avg, cancelled },
-      chart,
-      topItems: topItemsWithPct
-    };
-  }, [orders, timeFilter, selectedDate]);
-
-  const kpiCards = [
-    { label: 'Total Revenue', value: dashboardData.kpi.revenue, icon: DollarSign, color: 'text-green-600', isMoney: true },
-    { label: 'Orders', value: dashboardData.kpi.count, icon: Utensils, color: 'text-orange-600' },
-    { label: 'Avg Ticket', value: dashboardData.kpi.avg, icon: TrendingUp, color: 'text-red-600', isMoney: true },
-    { label: 'Cancelled', value: dashboardData.kpi.cancelled, icon: AlertCircle, color: 'text-slate-500' },
-  ];
-
-  const handlePrevDate = () => {
-    const d = new Date(selectedDate);
-    if (timeFilter === 'daily') d.setDate(d.getDate() - 1);
-    else if (timeFilter === 'weekly') d.setDate(d.getDate() - 7);
-    else if (timeFilter === 'monthly') d.setMonth(d.getMonth() - 1);
-    else d.setFullYear(d.getFullYear() - 1);
-    setSelectedDate(d);
-  };
-
-  const handleNextDate = () => {
-    const d = new Date(selectedDate);
-    if (timeFilter === 'daily') d.setDate(d.getDate() + 1);
-    else if (timeFilter === 'weekly') d.setDate(d.getDate() + 7);
-    else if (timeFilter === 'monthly') d.setMonth(d.getMonth() + 1);
-    else d.setFullYear(d.getFullYear() + 1);
-    setSelectedDate(d);
-  };
-
-  const formatDateLabel = () => {
-    if (timeFilter === 'daily') return selectedDate.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'long' });
-    if (timeFilter === 'yearly') return selectedDate.getFullYear().toString();
-    if (timeFilter === 'monthly') return selectedDate.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
-    return `Week of ${selectedDate.toLocaleDateString()}`;
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-2xl font-serif font-bold text-slate-900">Sales Overview</h2>
-          <p className="text-slate-500 text-sm">Real-time performance from Firestore</p>
-        </div>
-        
-        <div className="flex flex-col sm:flex-row items-center gap-3">
-          <div className="bg-white border border-slate-200 rounded-lg flex p-1 shadow-sm">
-            {['daily', 'weekly', 'monthly', 'yearly'].map((t) => (
-              <button
-                key={t}
-                onClick={() => setTimeFilter(t as any)}
-                className={`px-3 py-1.5 rounded-md text-xs font-bold capitalize transition-all ${
-                  timeFilter === t 
-                    ? 'bg-slate-900 text-white shadow-sm' 
-                    : 'text-slate-500 hover:bg-slate-50'
-                }`}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex items-center bg-white border border-slate-200 rounded-lg shadow-sm h-9">
-            <button onClick={handlePrevDate} className="px-2 hover:bg-slate-50 h-full rounded-l-lg border-r border-slate-100 text-slate-500">
-              <ChevronLeft size={16} />
-            </button>
-            <div className="px-4 text-xs font-bold text-slate-700 min-w-[120px] text-center">
-              {formatDateLabel()}
-            </div>
-            <button onClick={handleNextDate} className="px-2 hover:bg-slate-50 h-full rounded-r-lg border-l border-slate-100 text-slate-500">
-              <ChevronRight size={16} />
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {kpiCards.map((kpi, index) => (
-          <div key={index} className="bg-white p-6 rounded-xl border border-slate-100 shadow-sm">
-            <div className="flex justify-between items-start mb-4">
-              <div className="p-3 bg-slate-50 rounded-lg text-slate-600">
-                <kpi.icon size={20} />
-              </div>
-            </div>
-            <h4 className="text-sm font-medium text-slate-500 mb-1">{kpi.label}</h4>
-            <div className="text-2xl font-bold text-slate-900">
-              {kpi.isMoney 
-                ? new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(kpi.value)
-                : kpi.value
-              }
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="text-lg font-serif font-bold text-slate-900 capitalize">Revenue Trend</h3>
-          </div>
-          <div className="h-[300px] w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <RechartsBarChart data={dashboardData.chart}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                <XAxis 
-                  dataKey="label" 
-                  axisLine={false} 
-                  tickLine={false} 
-                  tick={{ fill: '#64748b', fontSize: 12 }} 
-                  dy={10}
-                />
-                <YAxis 
-                  axisLine={false} 
-                  tickLine={false} 
-                  tick={{ fill: '#64748b', fontSize: 12 }} 
-                  tickFormatter={(value) => `Rp${value/1000}k`}
-                />
-                <Tooltip 
-                  cursor={{ fill: '#f8fafc' }}
-                  contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                  formatter={(value: number) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(value)}
-                />
-                <Bar 
-                  dataKey="value" 
-                  fill="#ea580c" 
-                  radius={[4, 4, 0, 0]} 
-                  maxBarSize={50}
-                  animationDuration={500}
-                />
-              </RechartsBarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
-          <h3 className="text-lg font-serif font-bold text-slate-900 mb-6">Top Selling Items</h3>
-          <div className="space-y-6">
-            {dashboardData.topItems.length > 0 ? (
-              dashboardData.topItems.map((item, i) => (
-                <div key={i}>
-                  <div className="flex justify-between text-sm mb-2">
-                    <span className="font-medium text-slate-700 truncate pr-4">{item.name}</span>
-                    <span className="text-slate-500 shrink-0">{item.count} orders</span>
-                  </div>
-                  <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-orange-500 rounded-full transition-all duration-500" 
-                      style={{ width: `${item.pct}%` }}
-                    />
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="text-center text-slate-400 py-8 text-sm">
-                No sales data for this period
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const SettingsView = ({ user, settings, setSettings }: { user: User, settings: AppSettings, setSettings: (s: AppSettings) => void }) => {
-  const [users, setUsers] = useState(MOCK_USERS);
-  const [showAddUser, setShowAddUser] = useState(false);
-  const [newUser, setNewUser] = useState({ name: '', username: '', pin: '', role: 'staff' as Role });
-
-  const handleAddUser = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newUser.name || !newUser.username || !newUser.pin) return;
-    
-    setUsers([...users, { ...newUser, id: Math.random().toString() }]);
-    setShowAddUser(false);
-    setNewUser({ name: '', username: '', pin: '', role: 'staff' });
-    toast.success('User added successfully');
-  };
-
-  const deleteUser = (id: string) => {
-    setUsers(users.filter(u => u.id !== id));
-    toast.success('User removed');
-  };
-
-  return (
-    <div className="space-y-8 max-w-4xl">
-      <h2 className="text-2xl font-serif font-bold text-slate-900">Settings</h2>
-
-      {/* Section 1: User Profile (All Users) */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
-        <h3 className="text-lg font-bold text-slate-900 mb-4 flex items-center gap-2">
-          <Users size={20} className="text-orange-600" />
-          My Profile
-        </h3>
-        <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-xl">
-          <div className="h-12 w-12 bg-slate-200 rounded-full flex items-center justify-center text-slate-500 font-bold text-xl">
-            {user.username[0].toUpperCase()}
-          </div>
-          <div>
-            <div className="font-bold text-slate-900">{user.name}</div>
-            <div className="text-sm text-slate-500 capitalize">{user.role} Account</div>
-          </div>
-          <Button variant="outline" className="ml-auto">Change PIN</Button>
-        </div>
-      </div>
-
-      {/* Section 2: User Management (Manager Only) */}
-      {user.role === 'manager' && (
-        <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
-          <div className="flex justify-between items-center mb-6">
-            <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-              <Lock size={20} className="text-orange-600" />
-              User Management
-            </h3>
-            <Button onClick={() => setShowAddUser(true)} className="bg-slate-900 text-white hover:bg-slate-800">
-              <Plus size={16} className="mr-2" /> Add User
-            </Button>
-          </div>
-
-          <table className="w-full text-sm text-left">
-            <thead className="text-slate-500 border-b border-slate-100">
-              <tr>
-                <th className="pb-3 pl-2">Name</th>
-                <th className="pb-3">Username</th>
-                <th className="pb-3">Role</th>
-                <th className="pb-3">PIN</th>
-                <th className="pb-3 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50">
-              {users.map(u => (
-                <tr key={u.id} className="group">
-                  <td className="py-3 pl-2 font-medium text-slate-900">{u.name}</td>
-                  <td className="py-3 text-slate-500">{u.username}</td>
-                  <td className="py-3">
-                    <span className={`text-xs px-2 py-1 rounded-full font-medium ${u.role === 'manager' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
-                      {u.role}
-                    </span>
-                  </td>
-                  <td className="py-3 font-mono text-slate-400">••••</td>
-                  <td className="py-3 text-right">
-                    <button 
-                      onClick={() => deleteUser(u.id)}
-                      disabled={u.id === user.id}
-                      className="text-slate-400 hover:text-red-600 disabled:opacity-30 disabled:hover:text-slate-400"
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Section 3: App Settings */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
-        <h3 className="text-lg font-bold text-slate-900 mb-6 flex items-center gap-2">
-          <Store size={20} className="text-orange-600" />
-          App Configuration
-        </h3>
-        <div className="space-y-6">
-           <div className="flex items-center justify-between pb-6 border-b border-slate-50">
-            <div>
-              <div className="font-medium text-slate-900">Sound Notifications</div>
-              <div className="text-sm text-slate-500">Play sound when new orders arrive</div>
-            </div>
-            <StatusToggle 
-              isAvailable={settings.soundEnabled} 
-              onToggle={() => setSettings({ ...settings, soundEnabled: !settings.soundEnabled })} 
-            />
-          </div>
-
-          <div className="flex items-center justify-between pb-6 border-b border-slate-50">
-            <div>
-              <div className="font-medium text-slate-900">Toast Notifications</div>
-              <div className="text-sm text-slate-500">Show popup alerts for new orders</div>
-            </div>
-            <StatusToggle 
-              isAvailable={settings.notificationsEnabled} 
-              onToggle={() => setSettings({ ...settings, notificationsEnabled: !settings.notificationsEnabled })} 
-            />
-          </div>
-
-          {user.role === 'manager' && (
-            <>
-              <div className="flex items-center justify-between pb-6 border-b border-slate-50">
-                <div>
-                  <div className="font-medium text-slate-900">Store Status</div>
-                  <div className="text-sm text-slate-500">Close the store to stop receiving new orders</div>
-                </div>
-                <StatusToggle 
-                  isAvailable={settings.storeOpen} 
-                  onToggle={() => setSettings({ ...settings, storeOpen: !settings.storeOpen })} 
-                />
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="font-medium text-slate-900">Tax & Service</div>
-                  <div className="text-sm text-slate-500">Applied to all orders automatically</div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Input 
-                    className="w-20 text-right" 
-                    type="number"
-                    value={settings.taxPercentage}
-                    onChange={(e) => setSettings({ ...settings, taxPercentage: Number(e.target.value) })}
-                  />
-                  <span className="text-slate-500">%</span>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* Add User Modal */}
-      {showAddUser && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-xl font-bold font-serif">Add New User</h3>
-              <button onClick={() => setShowAddUser(false)}><X size={20} className="text-slate-400" /></button>
-            </div>
-            <form onSubmit={handleAddUser} className="space-y-4">
-              <div>
-                <label className="text-sm font-medium text-slate-700 block mb-1">Full Name</label>
-                <Input value={newUser.name} onChange={e => setNewUser({...newUser, name: e.target.value})} placeholder="e.g. John Doe" />
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-700 block mb-1">Username</label>
-                <Input value={newUser.username} onChange={e => setNewUser({...newUser, username: e.target.value})} placeholder="e.g. johnd" />
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-700 block mb-1">PIN Code</label>
-                <Input value={newUser.pin} onChange={e => setNewUser({...newUser, pin: e.target.value})} placeholder="4 digits" maxLength={4} />
-              </div>
-              <div>
-                <label className="text-sm font-medium text-slate-700 block mb-1">Role</label>
-                <select 
-                  className="w-full h-10 px-3 rounded-md border border-slate-200 bg-white text-sm"
-                  value={newUser.role}
-                  onChange={e => setNewUser({...newUser, role: e.target.value as Role})}
-                >
-                  <option value="staff">Staff</option>
-                  <option value="manager">Manager</option>
-                </select>
-              </div>
-              <div className="pt-4 flex gap-3">
-                <Button type="button" variant="outline" className="flex-1" onClick={() => setShowAddUser(false)}>Cancel</Button>
-                <Button type="submit" className="flex-1 bg-orange-600 hover:bg-orange-700 text-white">Create User</Button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-// --- Main Layout Component ---
-
-export default function HouseApp() {
-  const [user, setUser] = useState<User | null>(null);
-  const [activeTab, setActiveTab] = useState<'orders' | 'reviews' | 'menu' | 'sales' | 'settings'>('menu');
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [settings, setSettings] = useState<AppSettings>({
-    soundEnabled: true,
-    notificationsEnabled: true,
-    taxPercentage: 21,
-    storeOpen: true
-  });
-
-  // Use Custom Hooks
-  useWakeLock();
-  
-  // Calculate pending orders
-  const pendingOrdersCount = orders.filter(o => o.status === 'incoming').length;
-  useDynamicTitle(pendingOrdersCount);
-
-  // Listen to Authentication State
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
-      if (firebaseUser) {
-        // Map Firebase User to App User
-        // Ideally fetch this from Firestore 'users' collection
-        // For now, default to Manager
-        setUser({
-          id: firebaseUser.uid,
-          username: firebaseUser.email || 'User',
-          name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Admin',
-          role: 'manager', // Default to manager for now
-          pin: '****' 
-        });
-      } else {
-        setUser(null);
-      }
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // Load Settings
-  useEffect(() => {
-    const saved = localStorage.getItem('houseAppSettings');
-    if (saved) {
-      setSettings(JSON.parse(saved));
-    }
-  }, []);
-
-  // Save Settings
-  useEffect(() => {
-    localStorage.setItem('houseAppSettings', JSON.stringify(settings));
-  }, [settings]);
-
-  // Real-time Orders Listener
-  useEffect(() => {
-    let isFirstLoad = true;
-    const q = query(collection(db, "orders"), orderBy("createdAt", "desc"));
-    
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetchedOrders = snapshot.docs.map(doc => ({ 
-        id: doc.id, 
-        ...doc.data() 
-      })) as Order[];
-      
-      setOrders(fetchedOrders);
-
-      // Notification Logic
-      if (!isFirstLoad) {
-        snapshot.docChanges().forEach((change) => {
-          if (change.type === "added") {
-            // Check if it's a recent order (within last 30s) to avoid old orders triggering sound on slight connectivity refresh
-            const data = change.doc.data();
-            if (data.createdAt) {
-               // Play Sound
-               if (settings.soundEnabled) {
-                 const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
-                 audio.play().catch(e => console.log('Audio play failed', e));
-               }
-               // Show Toast
-               if (settings.notificationsEnabled) {
-                 toast.success(`New Order from Room ${data.roomNumber}!`);
-               }
-            }
-          }
-        });
-      }
-      isFirstLoad = false;
-    });
-
-    return () => unsubscribe();
-  }, [settings.soundEnabled, settings.notificationsEnabled]);
-
-  if (!user) {
-    return <LoginScreen />;
+}
+
+function downloadExcelFile(filename: string, mimeType: string, content: string): void {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
+}
+
+function ManagerOnly({ children, role }: { children: React.ReactNode; role: AdminRole }) {
+  if (role === 'manager') {
+    return <>{children}</>;
   }
 
-  const incomingCount = orders.filter(o => o.status === 'incoming').length;
+  return (
+    <div className="rounded-lg border border-[#d1c5b4]/30 bg-[#f4f3f1] p-8">
+      <div className="flex items-start gap-4">
+        <ShieldCheck className="mt-0.5 h-5 w-5 text-[#775a19]" />
+        <div>
+          <p className="font-['Manrope'] text-sm font-semibold text-[#1a1c1b]">Manager access only</p>
+          <p className="mt-1 font-['Manrope'] text-sm leading-6 text-[#4e4639]">
+            Revenue export and operator settings are limited to manager accounts.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Minimalist underline input for the login form ── */
+function UnderlineInput({
+  id,
+  label,
+  type = 'text',
+  value,
+  placeholder,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  type?: string;
+  value: string;
+  placeholder?: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="group relative border-b border-[#d1c5b4]/50 focus-within:border-[#775a19] transition-colors pb-1">
+      <label
+        htmlFor={id}
+        className="block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] mb-2"
+      >
+        {label}
+      </label>
+      <input
+        id={id}
+        type={type}
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        className="block w-full bg-transparent border-none focus:ring-0 outline-none font-['Manrope'] text-sm text-[#1a1c1b] placeholder:text-[#4e4639]/40 py-1"
+      />
+    </div>
+  );
+}
+
+export default function HouseApp() {
+  const [authReady, setAuthReady] = useState(false);
+  const [identity, setIdentity] = useState<AdminIdentity | null>(null);
+  const [authError, setAuthError] = useState('');
+  const [loginForm, setLoginForm] = useState({ credential: '', password: '' });
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [activeTab, setActiveTab] = useState<AdminTab>('orders');
+  const [orders, setOrders] = useState<DashboardOrder[]>([]);
+  const [products, setProducts] = useState<MenuProduct[]>([]);
+  const [menuSearch, setMenuSearch] = useState('');
+  const [editingProduct, setEditingProduct] = useState<MenuEditorState | null>(null);
+  const [notificationMessage, setNotificationMessage] = useState('');
+  const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [hotelId, setHotelId] = useState('atelier-meridian-demo');
+  const [stayId, setStayId] = useState('');
+  const [roomNumber, setRoomNumber] = useState('');
+  const [expiresInMinutes, setExpiresInMinutes] = useState('720');
+  const [tokenResult, setTokenResult] = useState<{ qrUrl: string; rawToken: string; expiresAt: string } | null>(null);
+  const [tokenStatus, setTokenStatus] = useState('');
+  const [isGeneratingToken, setIsGeneratingToken] = useState(false);
+  const [revokingSessionId, setRevokingSessionId] = useState<string | null>(null);
+  const previousOrdersRef = useRef<DashboardOrder[]>([]);
+
+  const unreadIncomingOrders = useMemo(
+    () => orders.filter((order) => order.status === 'incoming' && order.isRead === false),
+    [orders],
+  );
+  const activeOrders = useMemo(
+    () => orders.filter((order) => !['delivered', 'completed', 'cancelled'].includes(order.status)),
+    [orders],
+  );
+  const feedbackOrders = useMemo(
+    () => orders.filter((order) => order.rating !== null || Boolean(order.feedbackText) || Boolean(order.feedbackSummary)),
+    [orders],
+  );
+  const needsReviewOrders = useMemo(
+    () => orders.filter((order) => order.managerFollowUpRequested || (order.rating !== null && order.rating <= 3)),
+    [orders],
+  );
+  const averageRating = useMemo(() => {
+    const ratedOrders = orders.filter((order) => order.rating !== null);
+    if (ratedOrders.length === 0) {
+      return '-';
+    }
+    const total = ratedOrders.reduce((sum, order) => sum + Number(order.rating || 0), 0);
+    return (total / ratedOrders.length).toFixed(1);
+  }, [orders]);
+  const filteredProducts = useMemo(() => {
+    const queryText = menuSearch.trim().toLowerCase();
+    if (!queryText) {
+      return products;
+    }
+
+    return products.filter((product) => {
+      return (
+        product.name.toLowerCase().includes(queryText)
+        || product.category.toLowerCase().includes(queryText)
+        || product.description.toLowerCase().includes(queryText)
+      );
+    });
+  }, [products, menuSearch]);
+  const revenueSummary = useMemo(
+    () => summarizeRevenue(
+      orders.map((order) => ({
+        id: order.id,
+        roomNumber: order.roomNumber,
+        total: order.total,
+        status: order.status,
+        paymentMethod: order.paymentMethod,
+        createdAt: order.createdAt,
+      })),
+      new Date(`${selectedDate}T12:00:00`),
+    ),
+    [orders, selectedDate],
+  );
+
+  useDynamicTitle(unreadIncomingOrders.length);
+  useWakeLock();
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        setIdentity(null);
+        setAuthReady(true);
+        return;
+      }
+
+      const resolvedIdentity = await loadIdentity(user);
+      setIdentity(resolvedIdentity);
+      setAuthReady(true);
+
+      if (!resolvedIdentity) {
+        setAuthError('Account is not active for admin access.');
+        await signOut(auth);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!identity) {
+      setOrders([]);
+      setProducts([]);
+      return;
+    }
+
+    const ordersQuery = query(collection(db, 'orders'), orderBy('createdAt', 'desc'));
+    const unsubscribeOrders = onSnapshot(ordersQuery, (snapshot) => {
+      const nextOrders = snapshot.docs.map((docSnap) => normalizeOrder(docSnap.id, docSnap.data() as Record<string, unknown>));
+      const newIncomingIds = getNewIncomingOrderIds(previousOrdersRef.current, nextOrders);
+
+      if (newIncomingIds.length > 0) {
+        setNotificationMessage(
+          newIncomingIds.length === 1
+            ? '1 pesanan baru masuk dari guest app.'
+            : `${newIncomingIds.length} pesanan baru masuk dari guest app.`,
+        );
+      }
+
+      previousOrdersRef.current = nextOrders;
+      setOrders(nextOrders);
+    });
+
+    const unsubscribeProducts = onSnapshot(collection(db, 'products'), (snapshot) => {
+      setProducts(snapshot.docs.map((docSnap) => normalizeProduct(docSnap.id, docSnap.data() as Record<string, unknown>)));
+    });
+
+    return () => {
+      unsubscribeOrders();
+      unsubscribeProducts();
+    };
+  }, [identity]);
 
   const navItems = [
-    { id: 'orders', label: 'Live Orders', icon: Bell, badge: incomingCount > 0 ? incomingCount : undefined },
-    { id: 'reviews', label: 'Reviews', icon: Star },
-    { id: 'menu', label: 'Menu Manager', icon: Utensils },
-    { id: 'sales', label: 'Sales Report', icon: BarChart },
-    { id: 'settings', label: 'Settings', icon: Settings },
+    { id: 'orders' as const, label: 'Live Orders', icon: Bell, badge: unreadIncomingOrders.length || undefined },
+    { id: 'menu' as const, label: 'Menu Manager', icon: LayoutGrid },
+    { id: 'feedback' as const, label: 'Feedback', icon: MessageSquare, badge: needsReviewOrders.length || undefined },
+    { id: 'revenue' as const, label: 'Revenue', icon: LineChart },
+    { id: 'settings' as const, label: 'Settings', icon: Settings2 },
   ];
 
-  const handleLogout = async () => {
-    try {
-      await signOut(auth);
-      // user state is cleared by onAuthStateChanged
-    } catch (error) {
-      console.error("Logout failed", error);
+  async function loadIdentity(user: User): Promise<AdminIdentity | null> {
+    const profileSnap = await getDoc(doc(db, 'admin_users', user.uid));
+    const profile = profileSnap.exists() ? profileSnap.data() : null;
+    const session = resolveAdminSession({
+      uid: user.uid,
+      email: user.email || '',
+      profile: profile
+        ? {
+            name: String(profile.name || 'Hotel Operator'),
+            role: normalizeRole(profile.role),
+            active: profile.active !== false,
+          }
+        : null,
+    });
+
+    if (session.status !== 'authenticated') {
+      return null;
     }
-  };
 
-  return (
-    <div className="flex h-screen bg-slate-50 text-slate-900 font-sans overflow-hidden">
-      <Toaster />
-      {/* Sidebar */}
-      <aside className="w-64 bg-white border-r border-slate-100 flex flex-col shadow-[4px_0_24px_rgba(0,0,0,0.02)] z-10">
-        <div className="p-8 pb-4">
-          <div className="flex items-center gap-3 mb-8">
-            <img 
-              src="https://i.ibb.co.com/c5fhDh6/The-Gallery-Restaurant.png" 
-              alt="Ciputra Logo" 
-              className="w-auto h-16 object-contain"
-            />
+    return {
+      uid: session.uid,
+      email: session.email,
+      name: session.name,
+      role: session.role,
+      hotelId: String(profile?.hotelId || 'atelier-meridian-demo'),
+      username: String(profile?.username || profile?.email || session.email),
+    };
+  }
+
+  async function handleLogin(event: React.FormEvent) {
+    event.preventDefault();
+    setAuthError('');
+    setIsLoggingIn(true);
+
+    try {
+      await signInWithEmailAndPassword(auth, loginForm.credential.trim(), loginForm.password);
+    } catch (error) {
+      console.error('Admin login failed', error);
+      setAuthError('Login gagal. Gunakan akun manager atau staff yang aktif di Firebase Auth.');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  }
+
+  async function handleLogout() {
+    await signOut(auth);
+    setIdentity(null);
+  }
+
+  async function updateOrderStatus(orderId: string, status: string) {
+    await updateDoc(doc(db, 'orders', orderId), {
+      status,
+      isRead: true,
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  async function markAsRead(orderId: string) {
+    await updateDoc(doc(db, 'orders', orderId), {
+      isRead: true,
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  async function toggleProductAvailability(product: MenuProduct) {
+    await updateDoc(doc(db, 'products', product.id), {
+      isAvailable: !product.isAvailable,
+      unavailableReason: product.isAvailable ? (product.unavailableReason || 'Temporarily unavailable') : '',
+      updatedAt: serverTimestamp(),
+    });
+  }
+
+  async function saveProduct(editor: MenuEditorState) {
+    const payload = {
+      name: editor.name.trim(),
+      category: editor.category.trim(),
+      price: Number(editor.price) || 0,
+      description: editor.description.trim(),
+      image: editor.image.trim(),
+      isAvailable: editor.isAvailable,
+      unavailableReason: editor.unavailableReason.trim(),
+      updatedAt: serverTimestamp(),
+    };
+
+    if (editor.id) {
+      await updateDoc(doc(db, 'products', editor.id), payload);
+    } else {
+      await addDoc(collection(db, 'products'), {
+        ...payload,
+        createdAt: serverTimestamp(),
+      });
+    }
+
+    setEditingProduct(null);
+  }
+
+  async function deleteProduct(productId: string) {
+    await deleteDoc(doc(db, 'products', productId));
+  }
+
+  async function handleGenerateQr() {
+    if (!hotelId.trim() || !stayId.trim() || !roomNumber.trim()) {
+      setTokenStatus('Hotel ID, stay ID, and room number are required.');
+      return;
+    }
+
+    setIsGeneratingToken(true);
+    setTokenStatus('');
+
+    try {
+      const result = await createGuestQrToken({
+        hotelId: hotelId.trim(),
+        stayId: stayId.trim(),
+        roomNumber: roomNumber.trim(),
+        baseUrl: window.location.origin,
+        expiresInMinutes: Number(expiresInMinutes) || 720,
+      });
+      setTokenResult(result);
+      setTokenStatus('Guest QR generated. Copy the URL into the print or front-office workflow.');
+    } catch (error) {
+      console.error('Failed to create guest QR token', error);
+      setTokenStatus('Failed to create QR token. Make sure admin permissions and Functions deployment are ready.');
+    } finally {
+      setIsGeneratingToken(false);
+    }
+  }
+
+  async function copyTokenUrl() {
+    if (!tokenResult?.qrUrl) {
+      return;
+    }
+
+    await navigator.clipboard.writeText(tokenResult.qrUrl);
+    setTokenStatus('Guest QR URL copied to clipboard.');
+  }
+
+  async function handleRevokeGuest(guestUid: string) {
+    setRevokingSessionId(guestUid);
+    try {
+      await revokeGuestSessionAsAdmin(guestUid);
+    } finally {
+      setRevokingSessionId(null);
+    }
+  }
+
+  function exportRevenue() {
+    const exportPayload = buildRevenueExport(revenueSummary.rows, new Date(`${selectedDate}T12:00:00`));
+    downloadExcelFile(exportPayload.filename, exportPayload.mimeType, exportPayload.content);
+  }
+
+  /* ─── Loading screen ─── */
+  if (!authReady) {
+    return <div className="min-h-screen bg-[#faf9f7]" />;
+  }
+
+  /* ─── Login screen ─── */
+  if (!identity) {
+    return (
+      <div className="min-h-screen bg-[#faf9f7] font-['Manrope'] text-[#1a1c1b] flex items-center justify-center px-4 py-12">
+        <div
+          className="w-full max-w-5xl grid lg:grid-cols-[1.3fr_0.7fr] rounded-lg overflow-hidden shadow-[0_20px_60px_rgba(26,28,27,0.08)]"
+        >
+          {/* Left: brand panel */}
+          <div className="hidden lg:flex flex-col justify-between bg-[#f4f3f1] p-12">
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.3em] text-[#775a19] font-semibold mb-6">
+                Atelier Meridian
+              </p>
+              <h1 className="font-['Noto_Serif'] text-4xl leading-snug text-[#1a1c1b] tracking-tight">
+                In-Room Dining<br />Operations Centre
+              </h1>
+              <p className="mt-5 text-sm leading-7 text-[#4e4639] max-w-sm">
+                Tablet-first workspace for live orders, menu availability, guest feedback, and daily revenue.
+              </p>
             </div>
-        </div>
 
-        <nav className="flex-1 px-4 space-y-1">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = activeTab === item.id;
-            
-            return (
-              <button
-                key={item.id}
-                onClick={() => setActiveTab(item.id as any)}
-                className={`w-full flex items-center justify-between px-4 py-3 rounded-xl transition-all duration-200 group relative ${
-                  isActive 
-                    ? 'bg-orange-50 text-orange-700 font-medium shadow-xs' 
-                    : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
-                }`}
-              >
-                {isActive && (
-                  <motion.div
-                    layoutId="activeTabIndicator"
-                    className="absolute left-0 top-0 bottom-0 w-1 bg-orange-600 rounded-r-full"
-                  />
-                )}
-                <div className="flex items-center gap-3">
-                  <Icon size={20} className={isActive ? 'text-orange-600' : 'text-slate-400 group-hover:text-slate-600'} />
-                  <span>{item.label}</span>
+            <div className="grid grid-cols-3 gap-4 mt-10">
+              {[
+                { label: 'Roles', value: 'Manager & Staff' },
+                { label: 'Realtime', value: 'Guest orders' },
+                { label: 'Finance', value: 'Excel export' },
+              ].map((item) => (
+                <div key={item.label} className="bg-[#ffffff] p-4 rounded-lg shadow-[0_4px_12px_rgba(26,28,27,0.04)]">
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-[#4e4639]">{item.label}</p>
+                  <p className="mt-2 text-sm font-semibold text-[#1a1c1b]">{item.value}</p>
                 </div>
-                {item.badge && (
-                  <span className="bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
-                    {item.badge}
-                  </span>
+              ))}
+            </div>
+          </div>
+
+          {/* Right: form */}
+          <div className="flex items-center bg-[#ffffff] p-10">
+            <div className="w-full">
+              <p className="lg:hidden text-[10px] uppercase tracking-[0.3em] text-[#775a19] font-semibold mb-4">
+                Atelier Meridian
+              </p>
+              <h2 className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">
+                Staff Login
+              </h2>
+              <p className="mt-2 text-sm text-[#4e4639]">
+                Enter your operator credentials to access the dashboard.
+              </p>
+
+              <form className="mt-8 space-y-7" onSubmit={handleLogin}>
+                <UnderlineInput
+                  id="credential"
+                  label="Username / Email"
+                  placeholder="ops@ateliermeridian.demo"
+                  value={loginForm.credential}
+                  onChange={(v) => setLoginForm((c) => ({ ...c, credential: v }))}
+                />
+                <UnderlineInput
+                  id="password"
+                  label="Password"
+                  type="password"
+                  placeholder="••••••••"
+                  value={loginForm.password}
+                  onChange={(v) => setLoginForm((c) => ({ ...c, password: v }))}
+                />
+
+                {authError ? (
+                  <p className="text-xs text-[#ba1a1a] bg-[#ffdad6] px-4 py-3 rounded">{authError}</p>
+                ) : null}
+
+                <button
+                  type="submit"
+                  disabled={isLoggingIn}
+                  className="w-full bg-[#775a19] text-white font-['Manrope'] text-xs uppercase tracking-[0.2em] font-semibold py-4 rounded hover:bg-[#775a19]/90 transition-colors shadow-[0_4px_14px_rgba(119,90,25,0.2)] disabled:opacity-50"
+                >
+                  {isLoggingIn ? 'Signing in…' : 'Enter Dashboard'}
+                </button>
+              </form>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ─── Dashboard ─── */
+  return (
+    <div className="min-h-screen bg-[#faf9f7] font-['Manrope'] text-[#1a1c1b]">
+      <div className="flex min-h-screen">
+
+        {/* ── Sidebar ── */}
+        <aside className="hidden lg:flex fixed left-0 top-0 h-full w-64 flex-col bg-stone-100 py-10 z-50">
+          {/* Brand */}
+          <div className="px-8 mb-10">
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded bg-[#1a1c1b]">
+                <UtensilsCrossed className="h-4 w-4 text-[#c5a059]" />
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.25em] text-[#4e4639] font-semibold">Atelier Meridian</p>
+                <p className="font-['Noto_Serif'] text-base text-[#1a1c1b] leading-tight">Admin</p>
+              </div>
+            </div>
+
+            {/* Operator card */}
+            <div className="mt-6 bg-white rounded p-3 shadow-[0_4px_12px_rgba(26,28,27,0.04)]">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-[#1a1c1b] truncate">{identity.name}</p>
+                  <p className="text-xs text-[#4e4639] truncate mt-0.5">{identity.username}</p>
+                </div>
+                <span className={`shrink-0 rounded px-2 py-0.5 text-[10px] uppercase tracking-widest font-bold ${
+                  identity.role === 'manager' ? 'bg-[#1a1c1b] text-white' : 'bg-[#ffdea5] text-[#775a19]'
+                }`}>
+                  {identity.role}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Nav items */}
+          <nav className="flex-1 overflow-y-auto">
+            <ul className="space-y-0.5">
+              {navItems.map((item) => {
+                const Icon = item.icon;
+                const isActive = activeTab === item.id;
+                return (
+                  <li key={item.id}>
+                    <button
+                      className={`flex w-full items-center justify-between py-4 pl-8 pr-5 text-left transition-all duration-150 font-['Manrope'] text-sm font-medium tracking-wide ${
+                        isActive
+                          ? 'bg-white text-[#775a19] rounded-l-full font-bold shadow-[0_4px_12px_rgba(26,28,27,0.04)]'
+                          : 'text-stone-600 hover:bg-white/50'
+                      }`}
+                      onClick={() => setActiveTab(item.id)}
+                      type="button"
+                    >
+                      <span className="flex items-center gap-3">
+                        <Icon className={`h-4 w-4 ${isActive ? 'text-[#775a19]' : 'text-[#775a19]'}`} />
+                        {item.label}
+                      </span>
+                      {item.badge ? (
+                        <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                          isActive ? 'bg-[#775a19]/10 text-[#775a19]' : 'bg-[#ffdad6] text-[#93000a]'
+                        }`}>
+                          {item.badge}
+                        </span>
+                      ) : null}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </nav>
+
+          {/* Footer */}
+          <div className="px-8 mt-6">
+            <button
+              className="w-full flex items-center justify-center gap-2 bg-transparent text-[#775a19] border border-[#d1c5b4]/50 py-3 rounded text-xs font-['Manrope'] uppercase tracking-widest font-semibold hover:bg-white/60 transition-colors"
+              onClick={handleLogout}
+              type="button"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+              Log Out
+            </button>
+          </div>
+        </aside>
+
+        {/* ── Main ── */}
+        <div className="flex-1 lg:ml-64 flex flex-col">
+
+          {/* Top bar */}
+          <header className="sticky top-0 z-40 bg-[#faf9f7]/80 backdrop-blur-md shadow-[0_4px_24px_rgba(26,28,27,0.04)] flex items-center justify-between px-6 lg:px-12 h-16">
+            <div>
+              <span className="text-[10px] uppercase tracking-[0.25em] text-[#4e4639] font-semibold">iPad Operations View</span>
+              <h2 className="font-['Noto_Serif'] text-lg text-[#1a1c1b] leading-tight">
+                {navItems.find((item) => item.id === activeTab)?.label}
+              </h2>
+            </div>
+
+            {/* KPI strip */}
+            <div className="hidden md:flex items-center gap-4">
+              {[
+                { label: 'Incoming', value: unreadIncomingOrders.length },
+                { label: 'Active', value: activeOrders.length },
+                { label: 'Avg Rating', value: averageRating },
+                { label: "Today's Rev", value: formatIdr(revenueSummary.kpi.revenue) },
+              ].map((kpi) => (
+                <div key={kpi.label} className="text-right">
+                  <p className="text-[10px] uppercase tracking-[0.18em] text-[#4e4639]">{kpi.label}</p>
+                  <p className="font-['Noto_Serif'] text-base font-semibold text-[#1a1c1b]">{kpi.value}</p>
+                </div>
+              ))}
+            </div>
+          </header>
+
+          <main className="flex-1 px-6 lg:px-12 py-8">
+
+            {/* Notification banner */}
+            {notificationMessage ? (
+              <div className="mb-6 flex items-center justify-between bg-[#1a1c1b] px-5 py-3 rounded">
+                <div className="flex items-center gap-3">
+                  <Bell className="h-4 w-4 text-[#c5a059] shrink-0" />
+                  <p className="font-['Manrope'] text-sm text-white">{notificationMessage}</p>
+                </div>
+                <button
+                  className="text-white/60 hover:text-white text-xs font-['Manrope'] uppercase tracking-widest ml-4 shrink-0"
+                  onClick={() => setNotificationMessage('')}
+                  type="button"
+                >
+                  Close
+                </button>
+              </div>
+            ) : null}
+
+            {/* ── Live Orders ── */}
+            {activeTab === 'orders' ? (
+              <div className="space-y-4">
+                {orders.length === 0 ? (
+                  <div className="bg-white rounded p-8 text-center shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                    <p className="font-['Manrope'] text-sm text-[#4e4639]">No orders yet. Waiting for guest activity.</p>
+                  </div>
+                ) : (
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    {orders.map((order) => (
+                      <div
+                        key={order.id}
+                        className={`bg-white rounded shadow-[0_8px_24px_rgba(26,28,27,0.04)] overflow-hidden ${
+                          !order.isRead ? 'border-l-4 border-[#775a19]' : ''
+                        }`}
+                      >
+                        {/* Order header */}
+                        <div className="flex items-start justify-between gap-3 px-5 pt-5 pb-4 border-b border-[#f4f3f1]">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              {!order.isRead ? (
+                                <span className="h-2 w-2 rounded-full bg-[#775a19] shrink-0" />
+                              ) : null}
+                              <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Room {order.roomNumber}</h3>
+                            </div>
+                            <p className="mt-0.5 font-['Manrope'] text-xs text-[#4e4639]">
+                              {order.createdAt ? order.createdAt.toLocaleString() : 'Unknown time'}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className={`rounded px-2 py-0.5 font-['Manrope'] text-[10px] uppercase tracking-widest font-semibold ${STATUS_COLORS[order.status] || 'bg-[#e9e8e6] text-[#1a1c1b]'}`}>
+                              {order.status.replaceAll('_', ' ')}
+                            </span>
+                            <span className="rounded px-2 py-0.5 font-['Manrope'] text-[10px] uppercase tracking-widest font-semibold bg-[#f4f3f1] text-[#4e4639]">
+                              {formatIdr(order.total)}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Order body */}
+                        <div className="grid md:grid-cols-[1.2fr_0.8fr] gap-0">
+                          {/* Items */}
+                          <div className="p-5 bg-[#faf9f7] border-r border-[#f4f3f1]">
+                            <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.18em] text-[#4e4639] font-semibold mb-3">
+                              Order Items
+                            </p>
+                            <div className="space-y-3">
+                              {order.items.map((item) => (
+                                <div key={item.id} className="flex items-start justify-between gap-2">
+                                  <div>
+                                    <p className="font-['Manrope'] text-sm font-semibold text-[#1a1c1b]">{item.qty}× {item.name}</p>
+                                    {item.note ? (
+                                      <p className="mt-0.5 font-['Manrope'] text-xs text-[#4e4639] italic">"{item.note}"</p>
+                                    ) : null}
+                                  </div>
+                                  <p className="font-['Manrope'] text-sm text-[#4e4639] shrink-0">{formatIdr(item.qty * item.price)}</p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Guest info & controls */}
+                          <div className="p-5 flex flex-col gap-4">
+                            <div>
+                              <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.18em] text-[#4e4639] font-semibold mb-2">Guest</p>
+                              <div className="space-y-1 font-['Manrope'] text-sm text-[#1a1c1b]">
+                                <p><span className="text-[#4e4639]">Name: </span>{order.lastName || '—'}</p>
+                                <p><span className="text-[#4e4639]">Phone: </span>{order.phoneNumber || '—'}</p>
+                                <p><span className="text-[#4e4639]">Payment: </span>{order.paymentMethod}</p>
+                                <p><span className="text-[#4e4639]">Rating: </span>{order.rating ? `${order.rating}/5` : 'Pending'}</p>
+                              </div>
+                              {(order.feedbackText || order.feedbackSummary) ? (
+                                <p className="mt-2 font-['Manrope'] text-xs text-[#4e4639] italic leading-5">
+                                  "{order.feedbackText || order.feedbackSummary}"
+                                </p>
+                              ) : null}
+                            </div>
+
+                            <div className="space-y-2">
+                              {/* Status select — custom styled */}
+                              <div className="relative">
+                                <select
+                                  className="w-full appearance-none bg-[#f4f3f1] border-none rounded px-3 py-2 font-['Manrope'] text-sm text-[#1a1c1b] outline-none cursor-pointer"
+                                  value={order.status}
+                                  onChange={(e) => updateOrderStatus(order.id, e.target.value)}
+                                >
+                                  {ORDER_STATUSES.map((status) => (
+                                    <option key={status} value={status}>
+                                      {status.replaceAll('_', ' ')}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              <div className="flex gap-2">
+                                <button
+                                  className="flex-1 border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest py-2 rounded hover:bg-[#f4f3f1] transition-colors"
+                                  onClick={() => markAsRead(order.id)}
+                                  type="button"
+                                >
+                                  Mark Read
+                                </button>
+                                {(order.accessTokenId || order.guestUid) ? (
+                                  <button
+                                    className="flex-1 border border-[#d1c5b4]/50 text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest py-2 rounded hover:bg-[#ffdad6] transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
+                                    disabled={revokingSessionId === (order.accessTokenId || order.guestUid)}
+                                    onClick={() => handleRevokeGuest(order.accessTokenId || order.guestUid)}
+                                    type="button"
+                                  >
+                                    <ShieldBan className="h-3 w-3" />
+                                    Revoke
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 )}
-              </button>
-            );
-          })}
-        </nav>
+              </div>
+            ) : null}
 
-        <div className="p-4 mt-auto">
-          <button 
-            onClick={handleLogout}
-            className="w-full flex items-center gap-3 px-4 py-3 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors"
-          >
-            <LogOut size={20} />
-            <span>Log Out</span>
-          </button>
+            {/* ── Menu Manager ── */}
+            {activeTab === 'menu' ? (
+              <div className="space-y-6">
+                <div className="bg-white rounded p-5 shadow-[0_8px_24px_rgba(26,28,27,0.03)] flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">Menu readiness</p>
+                    <p className="mt-1.5 font-['Manrope'] text-sm leading-6 text-[#4e4639]">
+                      Mark dishes and beverages as ready or unavailable, edit details, and remove items.
+                    </p>
+                  </div>
+                  <div className="flex gap-3 flex-wrap">
+                    <div className="relative">
+                      <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#4e4639]" />
+                      <input
+                        className="bg-[#f4f3f1] border-none rounded pl-9 pr-4 py-2.5 font-['Manrope'] text-sm text-[#1a1c1b] outline-none placeholder:text-[#4e4639]/50 w-56"
+                        placeholder="Search menu"
+                        value={menuSearch}
+                        onChange={(e) => setMenuSearch(e.target.value)}
+                      />
+                    </div>
+                    <button
+                      className="flex items-center gap-2 bg-[#1a1c1b] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-4 py-2.5 rounded hover:bg-[#1a1c1b]/90 transition-colors"
+                      onClick={() => setEditingProduct(getEditorState())}
+                      type="button"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      Add Item
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
+                  {filteredProducts.map((product) => (
+                    <div key={product.id} className="bg-white rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] overflow-hidden">
+                      <div className="p-5">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">{product.name}</h3>
+                            <p className="font-['Manrope'] text-xs text-[#4e4639] mt-0.5">{product.category}</p>
+                          </div>
+                          <span className={`rounded px-2 py-0.5 font-['Manrope'] text-[10px] uppercase tracking-widest font-semibold shrink-0 ${
+                            product.isAvailable
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : 'bg-[#ffdad6] text-[#93000a]'
+                          }`}>
+                            {product.isAvailable ? 'Ready' : 'Unavailable'}
+                          </span>
+                        </div>
+
+                        <p className="mt-3 font-['Manrope'] text-sm leading-6 text-[#4e4639]">{product.description}</p>
+
+                        <div className="mt-3 bg-[#f4f3f1] px-4 py-2.5 rounded">
+                          <p className="font-['Manrope'] text-[10px] uppercase tracking-widest text-[#4e4639]">Guest price</p>
+                          <p className="font-['Noto_Serif'] text-base font-semibold text-[#775a19] mt-0.5">{formatIdr(product.price)}</p>
+                        </div>
+
+                        {product.unavailableReason ? (
+                          <p className="mt-3 font-['Manrope'] text-xs text-[#ba1a1a] bg-[#ffdad6] px-3 py-2 rounded">
+                            {product.unavailableReason}
+                          </p>
+                        ) : null}
+
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <button
+                            className={`font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-3 py-2 rounded transition-colors ${
+                              product.isAvailable
+                                ? 'border border-[#d1c5b4]/50 text-[#4e4639] hover:bg-[#f4f3f1]'
+                                : 'bg-[#775a19] text-white hover:bg-[#775a19]/90'
+                            }`}
+                            onClick={() => toggleProductAvailability(product)}
+                            type="button"
+                          >
+                            {product.isAvailable ? 'Set Unavailable' : 'Set Ready'}
+                          </button>
+                          <button
+                            className="flex items-center gap-1 border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-3 py-2 rounded hover:bg-[#f4f3f1] transition-colors"
+                            onClick={() => setEditingProduct(getEditorState(product))}
+                            type="button"
+                          >
+                            <PencilLine className="h-3 w-3" />
+                            Edit
+                          </button>
+                          <button
+                            className="border border-[#d1c5b4]/50 text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-3 py-2 rounded hover:bg-[#ffdad6] transition-colors"
+                            onClick={() => deleteProduct(product.id)}
+                            type="button"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {/* ── Feedback ── */}
+            {activeTab === 'feedback' ? (
+              <div className="space-y-6">
+                <div className="grid gap-4 md:grid-cols-3">
+                  {[
+                    { label: 'Feedback Entries', value: feedbackOrders.length },
+                    { label: 'Needs Manager', value: needsReviewOrders.length },
+                    { label: 'Average Rating', value: averageRating },
+                  ].map((kpi) => (
+                    <div key={kpi.label} className="bg-white rounded p-5 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                      <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.18em] text-[#4e4639] font-semibold">{kpi.label}</p>
+                      <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b] mt-2">{kpi.value}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid gap-4 xl:grid-cols-2">
+                  {feedbackOrders.map((order) => (
+                    <div
+                      key={`feedback-${order.id}`}
+                      className={`bg-white rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] overflow-hidden ${
+                        order.managerFollowUpRequested ? 'border-l-4 border-[#ba1a1a]' : ''
+                      }`}
+                    >
+                      <div className="p-5">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Room {order.roomNumber}</h3>
+                            <p className="font-['Manrope'] text-xs text-[#4e4639] mt-0.5">
+                              {order.createdAt ? order.createdAt.toLocaleString() : 'Unknown time'}
+                            </p>
+                          </div>
+                          <div className="flex flex-col items-end gap-1.5">
+                            {order.rating ? (
+                              <span className={`rounded px-2 py-0.5 font-['Manrope'] text-[10px] uppercase tracking-widest font-semibold ${
+                                order.rating <= 3 ? 'bg-[#ffdad6] text-[#93000a]' : 'bg-emerald-50 text-emerald-700'
+                              }`}>
+                                {order.rating} / 5
+                              </span>
+                            ) : null}
+                            {order.managerFollowUpRequested ? (
+                              <span className="rounded px-2 py-0.5 font-['Manrope'] text-[10px] uppercase tracking-widest font-semibold bg-[#1a1c1b] text-white">
+                                Follow-up
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <div className="mt-4 bg-[#f4f3f1] p-4 rounded font-['Manrope'] text-sm leading-6 text-[#4e4639] italic">
+                          "{order.feedbackText || order.feedbackSummary || 'Guest submitted a rating without written comments.'}"
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {/* ── Revenue ── */}
+            {activeTab === 'revenue' ? (
+              <ManagerOnly role={identity.role}>
+                <div className="space-y-6">
+                  <div className="bg-white rounded p-5 shadow-[0_8px_24px_rgba(26,28,27,0.03)] flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                    <div>
+                      <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">Daily revenue export</p>
+                      <p className="mt-1.5 font-['Manrope'] text-sm leading-6 text-[#4e4639]">
+                        Excel-compatible `.xls` export — open directly in Excel or Numbers.
+                      </p>
+                    </div>
+                    <div className="flex gap-3 flex-wrap">
+                      <input
+                        className="bg-[#f4f3f1] border-none rounded px-4 py-2.5 font-['Manrope'] text-sm text-[#1a1c1b] outline-none"
+                        type="date"
+                        value={selectedDate}
+                        onChange={(e) => setSelectedDate(e.target.value)}
+                      />
+                      <button
+                        className="bg-[#1a1c1b] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-2.5 rounded hover:bg-[#1a1c1b]/90 transition-colors"
+                        onClick={exportRevenue}
+                        type="button"
+                      >
+                        Export to Excel
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-3">
+                    {[
+                      { label: 'Revenue', value: formatIdr(revenueSummary.kpi.revenue) },
+                      { label: 'Completed Orders', value: revenueSummary.kpi.completedOrders },
+                      { label: 'Cancelled Orders', value: revenueSummary.kpi.cancelledOrders },
+                    ].map((kpi) => (
+                      <div key={kpi.label} className="bg-white rounded p-5 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                        <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.18em] text-[#4e4639] font-semibold">{kpi.label}</p>
+                        <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b] mt-2">{kpi.value}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="bg-white rounded p-5 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                    <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b] mb-4">Revenue Rows</h3>
+                    <div className="space-y-2">
+                      {revenueSummary.rows.map((row) => (
+                        <div key={row.id} className="grid gap-3 bg-[#f4f3f1] px-4 py-3 rounded font-['Manrope'] text-sm text-[#4e4639] md:grid-cols-4">
+                          <p><span className="text-[#1a1c1b] font-medium">Order: </span>{row.id.slice(0, 8)}…</p>
+                          <p><span className="text-[#1a1c1b] font-medium">Room: </span>{row.roomNumber}</p>
+                          <p><span className="text-[#1a1c1b] font-medium">Payment: </span>{row.paymentMethod}</p>
+                          <p><span className="text-[#775a19] font-semibold">{formatIdr(row.total)}</span></p>
+                        </div>
+                      ))}
+                      {revenueSummary.rows.length === 0 ? (
+                        <div className="bg-[#f4f3f1] rounded p-6 font-['Manrope'] text-sm text-[#4e4639] text-center">
+                          No completed revenue rows for the selected date.
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              </ManagerOnly>
+            ) : null}
+
+            {/* ── Settings ── */}
+            {activeTab === 'settings' ? (
+              <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+                {/* Guest QR */}
+                <div className="bg-white rounded p-6 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                  <div className="flex items-center gap-3 mb-6">
+                    <QrCode className="h-5 w-5 text-[#775a19]" />
+                    <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Guest QR Access</h3>
+                  </div>
+
+                  <div className="grid gap-5 md:grid-cols-2">
+                    <div className="space-y-5">
+                      {[
+                        { label: 'Hotel ID', value: hotelId, onChange: setHotelId, placeholder: '' },
+                        { label: 'Stay ID', value: stayId, onChange: setStayId, placeholder: 'stay-1204-demo' },
+                        { label: 'Room Number', value: roomNumber, onChange: setRoomNumber, placeholder: '1204' },
+                        { label: 'Expiry (minutes)', value: expiresInMinutes, onChange: setExpiresInMinutes, placeholder: '720' },
+                      ].map((field) => (
+                        <UnderlineInput
+                          key={field.label}
+                          id={field.label}
+                          label={field.label}
+                          value={field.value}
+                          placeholder={field.placeholder}
+                          onChange={field.onChange}
+                        />
+                      ))}
+
+                      <div className="flex flex-wrap gap-3 pt-2">
+                        <button
+                          className="bg-[#1a1c1b] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#1a1c1b]/90 transition-colors disabled:opacity-50"
+                          disabled={isGeneratingToken}
+                          onClick={handleGenerateQr}
+                          type="button"
+                        >
+                          {isGeneratingToken ? 'Generating…' : 'Generate QR'}
+                        </button>
+                        {tokenResult?.qrUrl ? (
+                          <button
+                            className="flex items-center gap-2 border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#f4f3f1] transition-colors"
+                            onClick={copyTokenUrl}
+                            type="button"
+                          >
+                            <Copy className="h-3.5 w-3.5" />
+                            Copy URL
+                          </button>
+                        ) : null}
+                      </div>
+                      {tokenStatus ? (
+                        <p className="font-['Manrope'] text-xs text-[#4e4639]">{tokenStatus}</p>
+                      ) : null}
+                    </div>
+
+                    <div className="bg-[#f4f3f1] rounded p-5">
+                      <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-4">Print Pack</p>
+                      {tokenResult ? (
+                        <div className="space-y-4 font-['Manrope'] text-sm">
+                          {[
+                            { label: 'Guest URL', value: tokenResult.qrUrl, mono: true },
+                            { label: 'Raw Token', value: tokenResult.rawToken, mono: true },
+                            { label: 'Expires At', value: new Date(tokenResult.expiresAt).toLocaleString(), mono: false },
+                          ].map((item) => (
+                            <div key={item.label}>
+                              <p className="font-['Manrope'] text-[10px] uppercase tracking-widest text-[#4e4639]">{item.label}</p>
+                              <p className={`mt-1.5 bg-white rounded px-3 py-2 text-xs text-[#1a1c1b] leading-5 break-all ${item.mono ? 'font-mono' : ''}`}>
+                                {item.value}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="font-['Manrope'] text-sm leading-6 text-[#4e4639]">
+                          Generate a guest access link for the front-office print workflow.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right column */}
+                <div className="space-y-4">
+                  {/* Active operator */}
+                  <div className="bg-white rounded p-6 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                    <div className="flex items-center gap-3 mb-4">
+                      <UserCircle2 className="h-5 w-5 text-[#775a19]" />
+                      <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Active Operator</h3>
+                    </div>
+                    <div className="bg-[#f4f3f1] rounded p-4 font-['Manrope'] text-sm space-y-2">
+                      <p className="text-[#4e4639]">Name: <span className="font-semibold text-[#1a1c1b]">{identity.name}</span></p>
+                      <p className="text-[#4e4639]">Role: <span className="font-semibold text-[#1a1c1b]">{identity.role}</span></p>
+                      <p className="text-[#4e4639]">Credential: <span className="font-semibold text-[#1a1c1b]">{identity.username}</span></p>
+                    </div>
+                  </div>
+
+                  {/* Suggested modules */}
+                  <div className="bg-white rounded p-6 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                    <div className="flex items-center gap-3 mb-4">
+                      <Sparkles className="h-5 w-5 text-[#775a19]" />
+                      <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Suggested Modules</h3>
+                    </div>
+                    <div className="space-y-3">
+                      {[
+                        { title: '1. Shift handover log', desc: 'Short notes between morning, afternoon, and night staff.' },
+                        { title: '2. SLA warning card', desc: 'Highlight orders waiting too long before kitchen accepts them.' },
+                        { title: '3. Staff action audit', desc: 'Track who changed menu readiness or moved an order status.' },
+                      ].map((mod) => (
+                        <div key={mod.title} className="bg-[#f4f3f1] rounded p-4">
+                          <p className="font-['Manrope'] text-sm font-semibold text-[#1a1c1b]">{mod.title}</p>
+                          <p className="mt-0.5 font-['Manrope'] text-sm text-[#4e4639] leading-6">{mod.desc}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+          </main>
         </div>
-      </aside>
+      </div>
 
-      {/* Main Content */}
-      <main className="flex-1 flex flex-col h-screen overflow-hidden">
-        {/* Header */}
-        <header className="h-20 bg-white border-b border-slate-100 flex items-center justify-between px-8 shrink-0">
-          <h2 className="text-xl font-serif font-bold text-slate-800">
-            {navItems.find(i => i.id === activeTab)?.label}
-          </h2>
-
-          <div className="flex items-center gap-4">
-            <div className="flex flex-col items-end mr-2">
-              <span className="text-sm font-bold text-slate-900">{user.name}</span>
-              <span className="text-xs text-slate-500 capitalize">{user.role}</span>
-            </div>
-            <div className="h-10 w-10 rounded-full bg-slate-100 border-2 border-white shadow-sm overflow-hidden flex items-center justify-center text-slate-400">
-              {user.username ? (
-                <span className="font-bold text-lg text-slate-600">{user.username[0].toUpperCase()}</span>
-              ) : (
-                <Users size={20} />
-              )}
-            </div>
-          </div>
-        </header>
-
-        {/* Scrollable Area */}
-        <div className="flex-1 overflow-y-auto bg-slate-50 p-8">
-          <div className="max-w-7xl mx-auto h-full">
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={activeTab}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.2 }}
-                className="h-full"
+      {/* ── Menu editor modal ── */}
+      {editingProduct ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-2xl bg-white rounded-lg shadow-[0_20px_60px_rgba(26,28,27,0.2)] max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-[#f4f3f1] flex items-start justify-between gap-4">
+              <div>
+                <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">Menu Editor</p>
+                <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b] mt-1">
+                  {editingProduct.id ? 'Edit Menu Item' : 'Add Menu Item'}
+                </h3>
+              </div>
+              <button
+                className="border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest px-3 py-1.5 rounded hover:bg-[#f4f3f1] transition-colors shrink-0"
+                onClick={() => setEditingProduct(null)}
+                type="button"
               >
-                {activeTab === 'menu' && <MenuManager />}
-                {activeTab === 'orders' && <LiveOrders orders={orders} />}
-                {activeTab === 'reviews' && <ReviewsView orders={orders} />}
-                {activeTab === 'sales' && <SalesReport user={user} orders={orders} />}
-                {activeTab === 'settings' && <SettingsView user={user} settings={settings} setSettings={setSettings} />}
-              </motion.div>
-            </AnimatePresence>
+                Close
+              </button>
+            </div>
+
+            <div className="p-6 grid gap-5 md:grid-cols-2">
+              {[
+                { label: 'Item Name', key: 'name' as const },
+                { label: 'Category', key: 'category' as const },
+                { label: 'Price', key: 'price' as const },
+                { label: 'Image URL', key: 'image' as const },
+              ].map((field) => (
+                <UnderlineInput
+                  key={field.key}
+                  id={field.key}
+                  label={field.label}
+                  value={editingProduct[field.key]}
+                  onChange={(v) => setEditingProduct((c) => c ? { ...c, [field.key]: v } : c)}
+                />
+              ))}
+
+              <div className="md:col-span-2">
+                <label className="block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">
+                  Description
+                </label>
+                <textarea
+                  className="w-full bg-[#f4f3f1] border-none rounded px-4 py-3 font-['Manrope'] text-sm text-[#1a1c1b] outline-none resize-none min-h-[100px]"
+                  value={editingProduct.description}
+                  onChange={(e) => setEditingProduct((c) => c ? { ...c, description: e.target.value } : c)}
+                />
+              </div>
+
+              <div className="md:col-span-2">
+                <UnderlineInput
+                  id="unavailableReason"
+                  label="Unavailable Reason"
+                  value={editingProduct.unavailableReason}
+                  placeholder="Kitchen prep exhausted for this shift"
+                  onChange={(v) => setEditingProduct((c) => c ? { ...c, unavailableReason: v } : c)}
+                />
+              </div>
+
+              <label className="md:col-span-2 flex items-center gap-3 bg-[#f4f3f1] px-4 py-3 rounded font-['Manrope'] text-sm text-[#1a1c1b] cursor-pointer">
+                <input
+                  checked={editingProduct.isAvailable}
+                  className="w-4 h-4 accent-[#775a19]"
+                  type="checkbox"
+                  onChange={(e) => setEditingProduct((c) => c ? { ...c, isAvailable: e.target.checked } : c)}
+                />
+                Ready for guest ordering
+              </label>
+            </div>
+
+            <div className="px-6 pb-6 flex flex-wrap gap-3">
+              <button
+                className="bg-[#775a19] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#775a19]/90 transition-colors shadow-[0_4px_14px_rgba(119,90,25,0.2)]"
+                onClick={() => saveProduct(editingProduct)}
+                type="button"
+              >
+                Save Menu Item
+              </button>
+              <button
+                className="border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#f4f3f1] transition-colors"
+                onClick={() => setEditingProduct(null)}
+                type="button"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
-      </main>
+      ) : null}
     </div>
   );
 }
