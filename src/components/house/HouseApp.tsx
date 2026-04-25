@@ -5,6 +5,7 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  limit,
   onSnapshot,
   orderBy,
   query,
@@ -15,6 +16,7 @@ import { User, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'f
 import {
   AlertTriangle,
   Bell,
+  BookOpen,
   CheckCircle2,
   Clock,
   Copy,
@@ -30,7 +32,6 @@ import {
   ShieldBan,
   ShieldCheck,
   Sparkles,
-  Store,
   UserCircle2,
   UtensilsCrossed,
 } from 'lucide-react';
@@ -41,10 +42,9 @@ import { useWakeLock } from '../../hooks/useWakeLock';
 import { getNewIncomingOrderIds } from '../../admin/notifications';
 import { buildRevenueExport, summarizeRevenue } from '../../admin/revenue';
 import { resolveAdminSession, type AdminRole } from '../../admin/session';
-import { Button } from '../ui/button';
-import { Input } from '../ui/input';
 
-type AdminTab = 'orders' | 'menu' | 'feedback' | 'revenue' | 'settings';
+type AdminTab = 'orders' | 'menu' | 'feedback' | 'revenue' | 'handover' | 'settings';
+type ShiftName = 'morning' | 'afternoon' | 'night';
 
 interface AdminIdentity {
   uid: string;
@@ -105,6 +105,15 @@ interface MenuEditorState {
   unavailableReason: string;
 }
 
+interface ShiftNote {
+  id: string;
+  shift: ShiftName;
+  note: string;
+  authorName: string;
+  authorUid: string;
+  createdAt: Date | null;
+}
+
 const ORDER_STATUSES = [
   'incoming',
   'confirmed',
@@ -117,6 +126,9 @@ const ORDER_STATUSES = [
   'completed',
   'cancelled',
 ];
+
+const TERMINAL_STATUSES = new Set(['delivered', 'completed', 'cancelled']);
+const SLA_THRESHOLD_MS = 20 * 60 * 1000; // 20 minutes
 
 const STATUS_COLORS: Record<string, string> = {
   incoming: 'bg-blue-50 text-blue-800',
@@ -131,6 +143,12 @@ const STATUS_COLORS: Record<string, string> = {
   cancelled: 'bg-[#ffdad6] text-[#93000a]',
 };
 
+const SHIFT_LABELS: Record<ShiftName, string> = {
+  morning: 'Morning — 06:00–14:00',
+  afternoon: 'Afternoon — 14:00–22:00',
+  night: 'Night — 22:00–06:00',
+};
+
 function normalizeRole(role: unknown): AdminRole {
   return role === 'staff' ? 'staff' : 'manager';
 }
@@ -141,6 +159,11 @@ function formatIdr(value: number): string {
     currency: 'IDR',
     minimumFractionDigits: 0,
   }).format(value);
+}
+
+function isOrderSlaBreached(order: DashboardOrder): boolean {
+  if (!order.createdAt || TERMINAL_STATUSES.has(order.status)) return false;
+  return Date.now() - order.createdAt.getTime() > SLA_THRESHOLD_MS;
 }
 
 function normalizeProduct(docId: string, data: Record<string, unknown>): MenuProduct {
@@ -158,7 +181,9 @@ function normalizeProduct(docId: string, data: Record<string, unknown>): MenuPro
 }
 
 function normalizeOrder(docId: string, data: Record<string, unknown>): DashboardOrder {
-  const feedbackDetails = typeof data.feedbackDetails === 'object' && data.feedbackDetails ? data.feedbackDetails as Record<string, unknown> : null;
+  const feedbackDetails = typeof data.feedbackDetails === 'object' && data.feedbackDetails
+    ? data.feedbackDetails as Record<string, unknown>
+    : null;
   const rawItems = Array.isArray(data.items) ? data.items : [];
 
   return {
@@ -187,20 +212,32 @@ function normalizeOrder(docId: string, data: Record<string, unknown>): Dashboard
     accessTokenId: typeof data.accessTokenId === 'string' ? data.accessTokenId : '',
     feedbackText: feedbackDetails && typeof feedbackDetails.comment === 'string'
       ? feedbackDetails.comment
-      : typeof data.feedback === 'string'
-        ? data.feedback
-        : '',
+      : typeof data.feedback === 'string' ? data.feedback : '',
     feedbackSummary: typeof data.reviewSummary === 'string'
       ? data.reviewSummary
-      : typeof data.feedback === 'string'
-        ? data.feedback
-        : '',
+      : typeof data.feedback === 'string' ? data.feedback : '',
     rating: feedbackDetails && typeof feedbackDetails.overallRating === 'number'
       ? feedbackDetails.overallRating
-      : typeof data.rating === 'number'
-        ? data.rating
-        : null,
-    managerFollowUpRequested: feedbackDetails?.requestManagerFollowUp === true || data.requestManagerFollowUp === true || data.requestManagerFollowUp === 'yes',
+      : typeof data.rating === 'number' ? data.rating : null,
+    managerFollowUpRequested:
+      feedbackDetails?.requestManagerFollowUp === true
+      || data.requestManagerFollowUp === true
+      || data.requestManagerFollowUp === 'yes',
+  };
+}
+
+function normalizeShiftNote(docId: string, data: Record<string, unknown>): ShiftNote {
+  return {
+    id: docId,
+    shift: (['morning', 'afternoon', 'night'].includes(data.shift as string)
+      ? data.shift as ShiftName
+      : 'morning'),
+    note: typeof data.note === 'string' ? data.note : '',
+    authorName: typeof data.authorName === 'string' ? data.authorName : 'Unknown',
+    authorUid: typeof data.authorUid === 'string' ? data.authorUid : '',
+    createdAt: data.createdAt && typeof data.createdAt === 'object' && 'toDate' in data.createdAt
+      ? (data.createdAt as { toDate: () => Date }).toDate()
+      : null,
   };
 }
 
@@ -230,9 +267,7 @@ function downloadExcelFile(filename: string, mimeType: string, content: string):
 }
 
 function ManagerOnly({ children, role }: { children: React.ReactNode; role: AdminRole }) {
-  if (role === 'manager') {
-    return <>{children}</>;
-  }
+  if (role === 'manager') return <>{children}</>;
 
   return (
     <div className="rounded-lg border border-[#d1c5b4]/30 bg-[#f4f3f1] p-8">
@@ -241,7 +276,7 @@ function ManagerOnly({ children, role }: { children: React.ReactNode; role: Admi
         <div>
           <p className="font-['Manrope'] text-sm font-semibold text-[#1a1c1b]">Manager access only</p>
           <p className="mt-1 font-['Manrope'] text-sm leading-6 text-[#4e4639]">
-            Revenue export and operator settings are limited to manager accounts.
+            This section is limited to manager accounts.
           </p>
         </div>
       </div>
@@ -249,35 +284,19 @@ function ManagerOnly({ children, role }: { children: React.ReactNode; role: Admi
   );
 }
 
-/* ── Minimalist underline input for the login form ── */
 function UnderlineInput({
-  id,
-  label,
-  type = 'text',
-  value,
-  placeholder,
-  onChange,
+  id, label, type = 'text', value, placeholder, onChange,
 }: {
-  id: string;
-  label: string;
-  type?: string;
-  value: string;
-  placeholder?: string;
-  onChange: (v: string) => void;
+  id: string; label: string; type?: string;
+  value: string; placeholder?: string; onChange: (v: string) => void;
 }) {
   return (
     <div className="group relative border-b border-[#d1c5b4]/50 focus-within:border-[#775a19] transition-colors pb-1">
-      <label
-        htmlFor={id}
-        className="block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] mb-2"
-      >
+      <label htmlFor={id} className="block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] mb-2">
         {label}
       </label>
       <input
-        id={id}
-        type={type}
-        value={value}
-        placeholder={placeholder}
+        id={id} type={type} value={value} placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
         className="block w-full bg-transparent border-none focus:ring-0 outline-none font-['Manrope'] text-sm text-[#1a1c1b] placeholder:text-[#4e4639]/40 py-1"
       />
@@ -292,12 +311,19 @@ export default function HouseApp() {
   const [loginForm, setLoginForm] = useState({ credential: '', password: '' });
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [activeTab, setActiveTab] = useState<AdminTab>('orders');
+
+  // Data
   const [orders, setOrders] = useState<DashboardOrder[]>([]);
   const [products, setProducts] = useState<MenuProduct[]>([]);
+  const [shiftNotes, setShiftNotes] = useState<ShiftNote[]>([]);
+
+  // UI state
   const [menuSearch, setMenuSearch] = useState('');
   const [editingProduct, setEditingProduct] = useState<MenuEditorState | null>(null);
   const [notificationMessage, setNotificationMessage] = useState('');
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().slice(0, 10));
+
+  // Settings / QR
   const [hotelId, setHotelId] = useState('atelier-meridian-demo');
   const [stayId, setStayId] = useState('');
   const [roomNumber, setRoomNumber] = useState('');
@@ -306,165 +332,180 @@ export default function HouseApp() {
   const [tokenStatus, setTokenStatus] = useState('');
   const [isGeneratingToken, setIsGeneratingToken] = useState(false);
   const [revokingSessionId, setRevokingSessionId] = useState<string | null>(null);
-  const previousOrdersRef = useRef<DashboardOrder[]>([]);
 
+  // Shift handover
+  const [activeShift, setActiveShift] = useState<ShiftName>('morning');
+  const [handoverDraft, setHandoverDraft] = useState('');
+  const [isSavingNote, setIsSavingNote] = useState(false);
+
+  const previousOrdersRef = useRef<DashboardOrder[]>([]);
+  // SLA ticker — re-renders every 60s so SLA badges stay live
+  const [, setSlaTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setSlaTick((n) => n + 1), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  /* ── Derived state ── */
   const unreadIncomingOrders = useMemo(
-    () => orders.filter((order) => order.status === 'incoming' && order.isRead === false),
+    () => orders.filter((o) => o.status === 'incoming' && !o.isRead),
     [orders],
   );
   const activeOrders = useMemo(
-    () => orders.filter((order) => !['delivered', 'completed', 'cancelled'].includes(order.status)),
+    () => orders.filter((o) => !TERMINAL_STATUSES.has(o.status)),
+    [orders],
+  );
+  const slaBreachedCount = useMemo(
+    () => orders.filter(isOrderSlaBreached).length,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [orders],
   );
   const feedbackOrders = useMemo(
-    () => orders.filter((order) => order.rating !== null || Boolean(order.feedbackText) || Boolean(order.feedbackSummary)),
+    () => orders.filter((o) => o.rating !== null || Boolean(o.feedbackText) || Boolean(o.feedbackSummary)),
     [orders],
   );
   const needsReviewOrders = useMemo(
-    () => orders.filter((order) => order.managerFollowUpRequested || (order.rating !== null && order.rating <= 3)),
+    () => orders.filter((o) => o.managerFollowUpRequested || (o.rating !== null && o.rating <= 3)),
     [orders],
   );
   const averageRating = useMemo(() => {
-    const ratedOrders = orders.filter((order) => order.rating !== null);
-    if (ratedOrders.length === 0) {
-      return '-';
-    }
-    const total = ratedOrders.reduce((sum, order) => sum + Number(order.rating || 0), 0);
-    return (total / ratedOrders.length).toFixed(1);
+    const rated = orders.filter((o) => o.rating !== null);
+    if (!rated.length) return '-';
+    return (rated.reduce((s, o) => s + Number(o.rating || 0), 0) / rated.length).toFixed(1);
   }, [orders]);
   const filteredProducts = useMemo(() => {
-    const queryText = menuSearch.trim().toLowerCase();
-    if (!queryText) {
-      return products;
-    }
-
-    return products.filter((product) => {
-      return (
-        product.name.toLowerCase().includes(queryText)
-        || product.category.toLowerCase().includes(queryText)
-        || product.description.toLowerCase().includes(queryText)
-      );
-    });
+    const q = menuSearch.trim().toLowerCase();
+    if (!q) return products;
+    return products.filter((p) =>
+      p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q) || p.description.toLowerCase().includes(q),
+    );
   }, [products, menuSearch]);
   const revenueSummary = useMemo(
     () => summarizeRevenue(
-      orders.map((order) => ({
-        id: order.id,
-        roomNumber: order.roomNumber,
-        total: order.total,
-        status: order.status,
-        paymentMethod: order.paymentMethod,
-        createdAt: order.createdAt,
+      orders.map((o) => ({
+        id: o.id, roomNumber: o.roomNumber, total: o.total,
+        status: o.status, paymentMethod: o.paymentMethod, createdAt: o.createdAt,
       })),
       new Date(`${selectedDate}T12:00:00`),
     ),
     [orders, selectedDate],
   );
+  const shiftNotesByShift = useMemo(() => {
+    const out: Record<ShiftName, ShiftNote[]> = { morning: [], afternoon: [], night: [] };
+    for (const n of shiftNotes) out[n.shift].push(n);
+    return out;
+  }, [shiftNotes]);
 
   useDynamicTitle(unreadIncomingOrders.length);
   useWakeLock();
 
+  /* ── Auth ── */
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      if (!user) {
-        setIdentity(null);
-        setAuthReady(true);
-        return;
-      }
-
-      const resolvedIdentity = await loadIdentity(user);
-      setIdentity(resolvedIdentity);
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (!user) { setIdentity(null); setAuthReady(true); return; }
+      const resolved = await loadIdentity(user);
+      setIdentity(resolved);
       setAuthReady(true);
-
-      if (!resolvedIdentity) {
-        setAuthError('Account is not active for admin access.');
-        await signOut(auth);
-      }
+      if (!resolved) { setAuthError('Account is not active for admin access.'); await signOut(auth); }
     });
-
-    return () => unsubscribe();
+    return () => unsub();
   }, []);
 
+  /* ── Firestore subscriptions ── */
   useEffect(() => {
-    if (!identity) {
-      setOrders([]);
-      setProducts([]);
-      return;
-    }
+    if (!identity) { setOrders([]); setProducts([]); setShiftNotes([]); return; }
 
-    const ordersQuery = query(collection(db, 'orders'), orderBy('createdAt', 'desc'));
-    const unsubscribeOrders = onSnapshot(ordersQuery, (snapshot) => {
-      const nextOrders = snapshot.docs.map((docSnap) => normalizeOrder(docSnap.id, docSnap.data() as Record<string, unknown>));
-      const newIncomingIds = getNewIncomingOrderIds(previousOrdersRef.current, nextOrders);
+    const unsubOrders = onSnapshot(
+      query(collection(db, 'orders'), orderBy('createdAt', 'desc')),
+      (snap) => {
+        const next = snap.docs.map((d) => normalizeOrder(d.id, d.data() as Record<string, unknown>));
+        const newIds = getNewIncomingOrderIds(previousOrdersRef.current, next);
+        if (newIds.length > 0) {
+          setNotificationMessage(
+            newIds.length === 1 ? '1 pesanan baru masuk.' : `${newIds.length} pesanan baru masuk.`,
+          );
+        }
+        previousOrdersRef.current = next;
+        setOrders(next);
+      },
+    );
 
-      if (newIncomingIds.length > 0) {
-        setNotificationMessage(
-          newIncomingIds.length === 1
-            ? '1 pesanan baru masuk dari guest app.'
-            : `${newIncomingIds.length} pesanan baru masuk dari guest app.`,
-        );
-      }
-
-      previousOrdersRef.current = nextOrders;
-      setOrders(nextOrders);
+    const unsubProducts = onSnapshot(collection(db, 'products'), (snap) => {
+      setProducts(snap.docs.map((d) => normalizeProduct(d.id, d.data() as Record<string, unknown>)));
     });
 
-    const unsubscribeProducts = onSnapshot(collection(db, 'products'), (snapshot) => {
-      setProducts(snapshot.docs.map((docSnap) => normalizeProduct(docSnap.id, docSnap.data() as Record<string, unknown>)));
-    });
+    const unsubNotes = onSnapshot(
+      query(collection(db, 'shiftNotes'), orderBy('createdAt', 'desc'), limit(60)),
+      (snap) => {
+        setShiftNotes(snap.docs.map((d) => normalizeShiftNote(d.id, d.data() as Record<string, unknown>)));
+      },
+    );
 
-    return () => {
-      unsubscribeOrders();
-      unsubscribeProducts();
-    };
+    return () => { unsubOrders(); unsubProducts(); unsubNotes(); };
   }, [identity]);
 
+  /* ── Nav ── */
   const navItems = [
     { id: 'orders' as const, label: 'Live Orders', icon: Bell, badge: unreadIncomingOrders.length || undefined },
     { id: 'menu' as const, label: 'Menu Manager', icon: LayoutGrid },
     { id: 'feedback' as const, label: 'Feedback', icon: MessageSquare, badge: needsReviewOrders.length || undefined },
     { id: 'revenue' as const, label: 'Revenue', icon: LineChart },
+    { id: 'handover' as const, label: 'Handover Notes', icon: BookOpen },
     { id: 'settings' as const, label: 'Settings', icon: Settings2 },
   ];
 
+  /* ── Helpers ── */
   async function loadIdentity(user: User): Promise<AdminIdentity | null> {
-    const profileSnap = await getDoc(doc(db, 'admin_users', user.uid));
-    const profile = profileSnap.exists() ? profileSnap.data() : null;
+    const snap = await getDoc(doc(db, 'admin_users', user.uid));
+    const profile = snap.exists() ? snap.data() : null;
     const session = resolveAdminSession({
       uid: user.uid,
       email: user.email || '',
       profile: profile
-        ? {
-            name: String(profile.name || 'Hotel Operator'),
-            role: normalizeRole(profile.role),
-            active: profile.active !== false,
-          }
+        ? { name: String(profile.name || 'Hotel Operator'), role: normalizeRole(profile.role), active: profile.active !== false }
         : null,
     });
-
-    if (session.status !== 'authenticated') {
-      return null;
-    }
-
+    if (session.status !== 'authenticated') return null;
     return {
-      uid: session.uid,
-      email: session.email,
-      name: session.name,
-      role: session.role,
+      uid: session.uid, email: session.email, name: session.name, role: session.role,
       hotelId: String(profile?.hotelId || 'atelier-meridian-demo'),
       username: String(profile?.username || profile?.email || session.email),
     };
   }
 
-  async function handleLogin(event: React.FormEvent) {
-    event.preventDefault();
+  /* Audit trail — writes one doc to auditLog for every staff action */
+  async function logAudit(
+    action: string,
+    targetType: 'order' | 'product' | 'guestSession' | 'shiftNote',
+    targetId: string,
+    details?: Record<string, unknown>,
+  ) {
+    if (!identity) return;
+    try {
+      await addDoc(collection(db, 'auditLog'), {
+        uid: identity.uid,
+        name: identity.name,
+        role: identity.role,
+        action,
+        targetType,
+        targetId,
+        details: details ?? {},
+        timestamp: serverTimestamp(),
+      });
+    } catch {
+      // audit must never crash the main action
+    }
+  }
+
+  /* ── Write handlers ── */
+  async function handleLogin(e: React.FormEvent) {
+    e.preventDefault();
     setAuthError('');
     setIsLoggingIn(true);
-
     try {
       await signInWithEmailAndPassword(auth, loginForm.credential.trim(), loginForm.password);
-    } catch (error) {
-      console.error('Admin login failed', error);
+    } catch (err) {
+      console.error('Admin login failed', err);
       setAuthError('Login gagal. Gunakan akun manager atau staff yang aktif di Firebase Auth.');
     } finally {
       setIsLoggingIn(false);
@@ -477,54 +518,47 @@ export default function HouseApp() {
   }
 
   async function updateOrderStatus(orderId: string, status: string) {
-    await updateDoc(doc(db, 'orders', orderId), {
-      status,
-      isRead: true,
-      updatedAt: serverTimestamp(),
-    });
+    const prev = orders.find((o) => o.id === orderId)?.status;
+    await updateDoc(doc(db, 'orders', orderId), { status, isRead: true, updatedAt: serverTimestamp() });
+    await logAudit('status_change', 'order', orderId, { from: prev, to: status });
   }
 
   async function markAsRead(orderId: string) {
-    await updateDoc(doc(db, 'orders', orderId), {
-      isRead: true,
-      updatedAt: serverTimestamp(),
-    });
+    await updateDoc(doc(db, 'orders', orderId), { isRead: true, updatedAt: serverTimestamp() });
+    await logAudit('mark_read', 'order', orderId);
   }
 
   async function toggleProductAvailability(product: MenuProduct) {
+    const next = !product.isAvailable;
     await updateDoc(doc(db, 'products', product.id), {
-      isAvailable: !product.isAvailable,
-      unavailableReason: product.isAvailable ? (product.unavailableReason || 'Temporarily unavailable') : '',
+      isAvailable: next,
+      unavailableReason: next ? '' : (product.unavailableReason || 'Temporarily unavailable'),
       updatedAt: serverTimestamp(),
     });
+    await logAudit(next ? 'set_available' : 'set_unavailable', 'product', product.id, { name: product.name });
   }
 
   async function saveProduct(editor: MenuEditorState) {
     const payload = {
-      name: editor.name.trim(),
-      category: editor.category.trim(),
-      price: Number(editor.price) || 0,
-      description: editor.description.trim(),
-      image: editor.image.trim(),
-      isAvailable: editor.isAvailable,
-      unavailableReason: editor.unavailableReason.trim(),
-      updatedAt: serverTimestamp(),
+      name: editor.name.trim(), category: editor.category.trim(),
+      price: Number(editor.price) || 0, description: editor.description.trim(),
+      image: editor.image.trim(), isAvailable: editor.isAvailable,
+      unavailableReason: editor.unavailableReason.trim(), updatedAt: serverTimestamp(),
     };
-
     if (editor.id) {
       await updateDoc(doc(db, 'products', editor.id), payload);
+      await logAudit('edit_product', 'product', editor.id, { name: editor.name });
     } else {
-      await addDoc(collection(db, 'products'), {
-        ...payload,
-        createdAt: serverTimestamp(),
-      });
+      const ref = await addDoc(collection(db, 'products'), { ...payload, createdAt: serverTimestamp() });
+      await logAudit('add_product', 'product', ref.id, { name: editor.name });
     }
-
     setEditingProduct(null);
   }
 
   async function deleteProduct(productId: string) {
+    const product = products.find((p) => p.id === productId);
     await deleteDoc(doc(db, 'products', productId));
+    await logAudit('delete_product', 'product', productId, { name: product?.name });
   }
 
   async function handleGenerateQr() {
@@ -532,33 +566,25 @@ export default function HouseApp() {
       setTokenStatus('Hotel ID, stay ID, and room number are required.');
       return;
     }
-
     setIsGeneratingToken(true);
     setTokenStatus('');
-
     try {
       const result = await createGuestQrToken({
-        hotelId: hotelId.trim(),
-        stayId: stayId.trim(),
-        roomNumber: roomNumber.trim(),
-        baseUrl: window.location.origin,
-        expiresInMinutes: Number(expiresInMinutes) || 720,
+        hotelId: hotelId.trim(), stayId: stayId.trim(), roomNumber: roomNumber.trim(),
+        baseUrl: window.location.origin, expiresInMinutes: Number(expiresInMinutes) || 720,
       });
       setTokenResult(result);
       setTokenStatus('Guest QR generated. Copy the URL into the print or front-office workflow.');
-    } catch (error) {
-      console.error('Failed to create guest QR token', error);
-      setTokenStatus('Failed to create QR token. Make sure admin permissions and Functions deployment are ready.');
+    } catch (err) {
+      console.error('Failed to create guest QR token', err);
+      setTokenStatus('Failed to create QR token.');
     } finally {
       setIsGeneratingToken(false);
     }
   }
 
   async function copyTokenUrl() {
-    if (!tokenResult?.qrUrl) {
-      return;
-    }
-
+    if (!tokenResult?.qrUrl) return;
     await navigator.clipboard.writeText(tokenResult.qrUrl);
     setTokenStatus('Guest QR URL copied to clipboard.');
   }
@@ -567,113 +593,167 @@ export default function HouseApp() {
     setRevokingSessionId(guestUid);
     try {
       await revokeGuestSessionAsAdmin(guestUid);
+      await logAudit('revoke_guest_session', 'guestSession', guestUid);
     } finally {
       setRevokingSessionId(null);
     }
   }
 
   function exportRevenue() {
-    const exportPayload = buildRevenueExport(revenueSummary.rows, new Date(`${selectedDate}T12:00:00`));
-    downloadExcelFile(exportPayload.filename, exportPayload.mimeType, exportPayload.content);
+    const exp = buildRevenueExport(revenueSummary.rows, new Date(`${selectedDate}T12:00:00`));
+    downloadExcelFile(exp.filename, exp.mimeType, exp.content);
   }
 
-  /* ─── Loading screen ─── */
-  if (!authReady) {
-    return <div className="min-h-screen bg-[#faf9f7]" />;
+  async function saveHandoverNote() {
+    if (!handoverDraft.trim() || !identity) return;
+    setIsSavingNote(true);
+    try {
+      const ref = await addDoc(collection(db, 'shiftNotes'), {
+        shift: activeShift,
+        note: handoverDraft.trim(),
+        authorName: identity.name,
+        authorUid: identity.uid,
+        createdAt: serverTimestamp(),
+      });
+      await logAudit('add_shift_note', 'shiftNote', ref.id, { shift: activeShift });
+      setHandoverDraft('');
+    } finally {
+      setIsSavingNote(false);
+    }
   }
 
-  /* ─── Login screen ─── */
+  /* ─────────────────── RENDER ─────────────────── */
+
+  if (!authReady) return <div className="min-h-screen bg-[#faf9f7]" />;
+
+  /* ── Login ── */
   if (!identity) {
     return (
-      <div className="min-h-screen bg-[#faf9f7] font-['Manrope'] text-[#1a1c1b] flex items-center justify-center px-4 py-12">
-        <div
-          className="w-full max-w-5xl grid lg:grid-cols-[1.3fr_0.7fr] rounded-lg overflow-hidden shadow-[0_20px_60px_rgba(26,28,27,0.08)]"
-        >
-          {/* Left: brand panel */}
-          <div className="hidden lg:flex flex-col justify-between bg-[#f4f3f1] p-12">
-            <div>
-              <p className="text-[10px] uppercase tracking-[0.3em] text-[#775a19] font-semibold mb-6">
-                Atelier Meridian
-              </p>
-              <h1 className="font-['Noto_Serif'] text-4xl leading-snug text-[#1a1c1b] tracking-tight">
-                In-Room Dining<br />Operations Centre
-              </h1>
-              <p className="mt-5 text-sm leading-7 text-[#4e4639] max-w-sm">
-                Tablet-first workspace for live orders, menu availability, guest feedback, and daily revenue.
-              </p>
-            </div>
+      <div className="min-h-screen bg-[#f4f3f1] font-['Manrope'] text-[#1a1c1b] flex flex-col lg:flex-row">
 
-            <div className="grid grid-cols-3 gap-4 mt-10">
-              {[
-                { label: 'Roles', value: 'Manager & Staff' },
-                { label: 'Realtime', value: 'Guest orders' },
-                { label: 'Finance', value: 'Excel export' },
-              ].map((item) => (
-                <div key={item.label} className="bg-[#ffffff] p-4 rounded-lg shadow-[0_4px_12px_rgba(26,28,27,0.04)]">
-                  <p className="text-[10px] uppercase tracking-[0.2em] text-[#4e4639]">{item.label}</p>
-                  <p className="mt-2 text-sm font-semibold text-[#1a1c1b]">{item.value}</p>
-                </div>
-              ))}
-            </div>
+        {/* Left — editorial brand panel */}
+        <div className="relative hidden lg:flex flex-col justify-between flex-1 bg-[#1a1c1b] px-16 py-16 overflow-hidden">
+          {/* Background texture rings */}
+          <div className="pointer-events-none absolute inset-0">
+            <div className="absolute -top-32 -left-32 w-[600px] h-[600px] rounded-full border border-[#c5a059]/10" />
+            <div className="absolute -top-16 -left-16 w-[500px] h-[500px] rounded-full border border-[#c5a059]/8" />
+            <div className="absolute bottom-0 right-0 w-[400px] h-[400px] rounded-full border border-[#c5a059]/6 translate-x-1/3 translate-y-1/3" />
           </div>
 
-          {/* Right: form */}
-          <div className="flex items-center bg-[#ffffff] p-10">
-            <div className="w-full">
-              <p className="lg:hidden text-[10px] uppercase tracking-[0.3em] text-[#775a19] font-semibold mb-4">
+          {/* Top: wordmark */}
+          <div className="relative z-10">
+            <div className="flex items-center gap-3 mb-16">
+              <div className="flex h-8 w-8 items-center justify-center rounded bg-[#c5a059]/20">
+                <UtensilsCrossed className="h-4 w-4 text-[#c5a059]" />
+              </div>
+              <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.35em] text-[#c5a059] font-semibold">
                 Atelier Meridian
               </p>
-              <h2 className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">
-                Staff Login
-              </h2>
-              <p className="mt-2 text-sm text-[#4e4639]">
-                Enter your operator credentials to access the dashboard.
-              </p>
-
-              <form className="mt-8 space-y-7" onSubmit={handleLogin}>
-                <UnderlineInput
-                  id="credential"
-                  label="Username / Email"
-                  placeholder="ops@ateliermeridian.demo"
-                  value={loginForm.credential}
-                  onChange={(v) => setLoginForm((c) => ({ ...c, credential: v }))}
-                />
-                <UnderlineInput
-                  id="password"
-                  label="Password"
-                  type="password"
-                  placeholder="••••••••"
-                  value={loginForm.password}
-                  onChange={(v) => setLoginForm((c) => ({ ...c, password: v }))}
-                />
-
-                {authError ? (
-                  <p className="text-xs text-[#ba1a1a] bg-[#ffdad6] px-4 py-3 rounded">{authError}</p>
-                ) : null}
-
-                <button
-                  type="submit"
-                  disabled={isLoggingIn}
-                  className="w-full bg-[#775a19] text-white font-['Manrope'] text-xs uppercase tracking-[0.2em] font-semibold py-4 rounded hover:bg-[#775a19]/90 transition-colors shadow-[0_4px_14px_rgba(119,90,25,0.2)] disabled:opacity-50"
-                >
-                  {isLoggingIn ? 'Signing in…' : 'Enter Dashboard'}
-                </button>
-              </form>
             </div>
+
+            <h1 className="font-['Noto_Serif'] text-5xl leading-tight text-white tracking-tight">
+              In-Room Dining<br />
+              <span className="text-[#c5a059]">Operations</span>
+            </h1>
+            <p className="mt-6 font-['Manrope'] text-sm leading-7 text-white/50 max-w-xs">
+              Live orders, menu readiness, shift handover, and daily revenue — built for tablet-first staff workflow.
+            </p>
+          </div>
+
+          {/* Bottom: capability cards */}
+          <div className="relative z-10 grid grid-cols-2 gap-3">
+            {[
+              { label: 'Live Orders', desc: 'Realtime guest requests with SLA tracking' },
+              { label: 'Menu Manager', desc: 'Toggle availability per shift' },
+              { label: 'Shift Handover', desc: 'Leave notes for incoming staff' },
+              { label: 'Revenue Export', desc: 'Daily summary to Excel' },
+            ].map((card) => (
+              <div key={card.label} className="bg-white/5 border border-white/8 rounded p-4">
+                <p className="font-['Manrope'] text-xs font-semibold text-[#c5a059]">{card.label}</p>
+                <p className="mt-1 font-['Manrope'] text-xs text-white/40 leading-5">{card.desc}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Right — login form */}
+        <div className="flex flex-1 lg:max-w-[420px] flex-col justify-center px-8 lg:px-14 py-12 bg-[#faf9f7]">
+
+          {/* Mobile wordmark */}
+          <div className="flex items-center gap-2 mb-10 lg:hidden">
+            <div className="flex h-7 w-7 items-center justify-center rounded bg-[#1a1c1b]">
+              <UtensilsCrossed className="h-3.5 w-3.5 text-[#c5a059]" />
+            </div>
+            <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.3em] text-[#775a19] font-semibold">
+              Atelier Meridian
+            </p>
+          </div>
+
+          {/* Heading */}
+          <div className="mb-10">
+            <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.3em] text-[#775a19] font-semibold mb-3">
+              Staff access
+            </p>
+            <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] leading-tight tracking-tight">
+              Welcome back
+            </h2>
+            <p className="mt-3 font-['Manrope'] text-sm leading-6 text-[#4e4639]">
+              Sign in with your operator email and password to enter the dashboard.
+            </p>
+          </div>
+
+          {/* Form */}
+          <form className="space-y-8" onSubmit={handleLogin}>
+            <UnderlineInput
+              id="credential"
+              label="Email"
+              placeholder="manager@freshbloom.app"
+              value={loginForm.credential}
+              onChange={(v) => setLoginForm((c) => ({ ...c, credential: v }))}
+            />
+            <UnderlineInput
+              id="password"
+              label="Password"
+              type="password"
+              placeholder="••••••••"
+              value={loginForm.password}
+              onChange={(v) => setLoginForm((c) => ({ ...c, password: v }))}
+            />
+
+            {authError ? (
+              <div className="flex items-start gap-3 bg-[#ffdad6] px-4 py-3 rounded">
+                <AlertTriangle className="h-3.5 w-3.5 text-[#ba1a1a] mt-0.5 shrink-0" />
+                <p className="font-['Manrope'] text-xs text-[#ba1a1a]">{authError}</p>
+              </div>
+            ) : null}
+
+            <button
+              type="submit"
+              disabled={isLoggingIn}
+              className="w-full bg-[#775a19] text-white font-['Manrope'] text-xs uppercase tracking-[0.25em] font-bold py-4 rounded transition-all hover:bg-[#775a19]/90 shadow-[0_4px_20px_rgba(119,90,25,0.25)] active:scale-[0.99] disabled:opacity-50"
+            >
+              {isLoggingIn ? 'Signing in…' : 'Enter Dashboard'}
+            </button>
+          </form>
+
+          {/* Divider */}
+          <div className="mt-10 pt-8 border-t border-[#d1c5b4]/30">
+            <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639]/50">
+              Secured by Firebase Authentication
+            </p>
           </div>
         </div>
       </div>
     );
   }
 
-  /* ─── Dashboard ─── */
+  /* ── Dashboard ── */
   return (
     <div className="min-h-screen bg-[#faf9f7] font-['Manrope'] text-[#1a1c1b]">
       <div className="flex min-h-screen">
 
         {/* ── Sidebar ── */}
         <aside className="hidden lg:flex fixed left-0 top-0 h-full w-64 flex-col bg-stone-100 py-10 z-50">
-          {/* Brand */}
           <div className="px-8 mb-10">
             <div className="flex items-center gap-3">
               <div className="flex h-9 w-9 items-center justify-center rounded bg-[#1a1c1b]">
@@ -685,7 +765,6 @@ export default function HouseApp() {
               </div>
             </div>
 
-            {/* Operator card */}
             <div className="mt-6 bg-white rounded p-3 shadow-[0_4px_12px_rgba(26,28,27,0.04)]">
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0">
@@ -701,32 +780,30 @@ export default function HouseApp() {
             </div>
           </div>
 
-          {/* Nav items */}
           <nav className="flex-1 overflow-y-auto">
             <ul className="space-y-0.5">
-              {navItems.map((item) => {
-                const Icon = item.icon;
-                const isActive = activeTab === item.id;
+              {navItems.map(({ id, label, icon: Icon, badge }) => {
+                const isActive = activeTab === id;
                 return (
-                  <li key={item.id}>
+                  <li key={id}>
                     <button
                       className={`flex w-full items-center justify-between py-4 pl-8 pr-5 text-left transition-all duration-150 font-['Manrope'] text-sm font-medium tracking-wide ${
                         isActive
                           ? 'bg-white text-[#775a19] rounded-l-full font-bold shadow-[0_4px_12px_rgba(26,28,27,0.04)]'
                           : 'text-stone-600 hover:bg-white/50'
                       }`}
-                      onClick={() => setActiveTab(item.id)}
+                      onClick={() => setActiveTab(id)}
                       type="button"
                     >
                       <span className="flex items-center gap-3">
-                        <Icon className={`h-4 w-4 ${isActive ? 'text-[#775a19]' : 'text-[#775a19]'}`} />
-                        {item.label}
+                        <Icon className="h-4 w-4 text-[#775a19]" />
+                        {label}
                       </span>
-                      {item.badge ? (
+                      {badge ? (
                         <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
                           isActive ? 'bg-[#775a19]/10 text-[#775a19]' : 'bg-[#ffdad6] text-[#93000a]'
                         }`}>
-                          {item.badge}
+                          {badge}
                         </span>
                       ) : null}
                     </button>
@@ -736,12 +813,10 @@ export default function HouseApp() {
             </ul>
           </nav>
 
-          {/* Footer */}
           <div className="px-8 mt-6">
             <button
               className="w-full flex items-center justify-center gap-2 bg-transparent text-[#775a19] border border-[#d1c5b4]/50 py-3 rounded text-xs font-['Manrope'] uppercase tracking-widest font-semibold hover:bg-white/60 transition-colors"
-              onClick={handleLogout}
-              type="button"
+              onClick={handleLogout} type="button"
             >
               <LogOut className="h-3.5 w-3.5" />
               Log Out
@@ -757,12 +832,19 @@ export default function HouseApp() {
             <div>
               <span className="text-[10px] uppercase tracking-[0.25em] text-[#4e4639] font-semibold">iPad Operations View</span>
               <h2 className="font-['Noto_Serif'] text-lg text-[#1a1c1b] leading-tight">
-                {navItems.find((item) => item.id === activeTab)?.label}
+                {navItems.find((n) => n.id === activeTab)?.label}
               </h2>
             </div>
 
-            {/* KPI strip */}
-            <div className="hidden md:flex items-center gap-4">
+            <div className="hidden md:flex items-center gap-6">
+              {slaBreachedCount > 0 ? (
+                <div className="flex items-center gap-1.5 text-[#ba1a1a]">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  <span className="font-['Manrope'] text-xs font-semibold uppercase tracking-widest">
+                    {slaBreachedCount} SLA
+                  </span>
+                </div>
+              ) : null}
               {[
                 { label: 'Incoming', value: unreadIncomingOrders.length },
                 { label: 'Active', value: activeOrders.length },
@@ -788,15 +870,16 @@ export default function HouseApp() {
                 </div>
                 <button
                   className="text-white/60 hover:text-white text-xs font-['Manrope'] uppercase tracking-widest ml-4 shrink-0"
-                  onClick={() => setNotificationMessage('')}
-                  type="button"
+                  onClick={() => setNotificationMessage('')} type="button"
                 >
                   Close
                 </button>
               </div>
             ) : null}
 
-            {/* ── Live Orders ── */}
+            {/* ══════════════════════════════════════════
+                LIVE ORDERS
+            ══════════════════════════════════════════ */}
             {activeTab === 'orders' ? (
               <div className="space-y-4">
                 {orders.length === 0 ? (
@@ -805,129 +888,137 @@ export default function HouseApp() {
                   </div>
                 ) : (
                   <div className="grid gap-4 xl:grid-cols-2">
-                    {orders.map((order) => (
-                      <div
-                        key={order.id}
-                        className={`bg-white rounded shadow-[0_8px_24px_rgba(26,28,27,0.04)] overflow-hidden ${
-                          !order.isRead ? 'border-l-4 border-[#775a19]' : ''
-                        }`}
-                      >
-                        {/* Order header */}
-                        <div className="flex items-start justify-between gap-3 px-5 pt-5 pb-4 border-b border-[#f4f3f1]">
-                          <div>
-                            <div className="flex items-center gap-2">
-                              {!order.isRead ? (
-                                <span className="h-2 w-2 rounded-full bg-[#775a19] shrink-0" />
-                              ) : null}
-                              <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Room {order.roomNumber}</h3>
+                    {orders.map((order) => {
+                      const sla = isOrderSlaBreached(order);
+                      return (
+                        <div
+                          key={order.id}
+                          className={`bg-white rounded shadow-[0_8px_24px_rgba(26,28,27,0.04)] overflow-hidden ${
+                            sla
+                              ? 'border-l-4 border-[#ba1a1a]'
+                              : !order.isRead
+                                ? 'border-l-4 border-[#775a19]'
+                                : ''
+                          }`}
+                        >
+                          {/* SLA warning strip */}
+                          {sla ? (
+                            <div className="flex items-center gap-2 bg-[#ffdad6] px-5 py-2">
+                              <AlertTriangle className="h-3.5 w-3.5 text-[#ba1a1a] shrink-0" />
+                              <p className="font-['Manrope'] text-xs font-semibold text-[#ba1a1a] uppercase tracking-widest">
+                                SLA breached — order waiting &gt;20 min
+                              </p>
                             </div>
-                            <p className="mt-0.5 font-['Manrope'] text-xs text-[#4e4639]">
-                              {order.createdAt ? order.createdAt.toLocaleString() : 'Unknown time'}
-                            </p>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className={`rounded px-2 py-0.5 font-['Manrope'] text-[10px] uppercase tracking-widest font-semibold ${STATUS_COLORS[order.status] || 'bg-[#e9e8e6] text-[#1a1c1b]'}`}>
-                              {order.status.replaceAll('_', ' ')}
-                            </span>
-                            <span className="rounded px-2 py-0.5 font-['Manrope'] text-[10px] uppercase tracking-widest font-semibold bg-[#f4f3f1] text-[#4e4639]">
-                              {formatIdr(order.total)}
-                            </span>
-                          </div>
-                        </div>
+                          ) : null}
 
-                        {/* Order body */}
-                        <div className="grid md:grid-cols-[1.2fr_0.8fr] gap-0">
-                          {/* Items */}
-                          <div className="p-5 bg-[#faf9f7] border-r border-[#f4f3f1]">
-                            <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.18em] text-[#4e4639] font-semibold mb-3">
-                              Order Items
-                            </p>
-                            <div className="space-y-3">
-                              {order.items.map((item) => (
-                                <div key={item.id} className="flex items-start justify-between gap-2">
-                                  <div>
-                                    <p className="font-['Manrope'] text-sm font-semibold text-[#1a1c1b]">{item.qty}× {item.name}</p>
-                                    {item.note ? (
-                                      <p className="mt-0.5 font-['Manrope'] text-xs text-[#4e4639] italic">"{item.note}"</p>
-                                    ) : null}
-                                  </div>
-                                  <p className="font-['Manrope'] text-sm text-[#4e4639] shrink-0">{formatIdr(item.qty * item.price)}</p>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-
-                          {/* Guest info & controls */}
-                          <div className="p-5 flex flex-col gap-4">
+                          {/* Order header */}
+                          <div className="flex items-start justify-between gap-3 px-5 pt-5 pb-4 border-b border-[#f4f3f1]">
                             <div>
-                              <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.18em] text-[#4e4639] font-semibold mb-2">Guest</p>
-                              <div className="space-y-1 font-['Manrope'] text-sm text-[#1a1c1b]">
-                                <p><span className="text-[#4e4639]">Name: </span>{order.lastName || '—'}</p>
-                                <p><span className="text-[#4e4639]">Phone: </span>{order.phoneNumber || '—'}</p>
-                                <p><span className="text-[#4e4639]">Payment: </span>{order.paymentMethod}</p>
-                                <p><span className="text-[#4e4639]">Rating: </span>{order.rating ? `${order.rating}/5` : 'Pending'}</p>
+                              <div className="flex items-center gap-2">
+                                {!order.isRead && !sla ? (
+                                  <span className="h-2 w-2 rounded-full bg-[#775a19] shrink-0" />
+                                ) : null}
+                                <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Room {order.roomNumber}</h3>
                               </div>
-                              {(order.feedbackText || order.feedbackSummary) ? (
-                                <p className="mt-2 font-['Manrope'] text-xs text-[#4e4639] italic leading-5">
-                                  "{order.feedbackText || order.feedbackSummary}"
-                                </p>
-                              ) : null}
+                              <p className="mt-0.5 font-['Manrope'] text-xs text-[#4e4639]">
+                                {order.createdAt ? order.createdAt.toLocaleString() : 'Unknown time'}
+                              </p>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className={`rounded px-2 py-0.5 font-['Manrope'] text-[10px] uppercase tracking-widest font-semibold ${STATUS_COLORS[order.status] || 'bg-[#e9e8e6] text-[#1a1c1b]'}`}>
+                                {order.status.replaceAll('_', ' ')}
+                              </span>
+                              <span className="rounded px-2 py-0.5 font-['Manrope'] text-[10px] uppercase tracking-widest font-semibold bg-[#f4f3f1] text-[#4e4639]">
+                                {formatIdr(order.total)}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Order body */}
+                          <div className="grid md:grid-cols-[1.2fr_0.8fr]">
+                            <div className="p-5 bg-[#faf9f7] border-r border-[#f4f3f1]">
+                              <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.18em] text-[#4e4639] font-semibold mb-3">Order Items</p>
+                              <div className="space-y-3">
+                                {order.items.map((item) => (
+                                  <div key={item.id} className="flex items-start justify-between gap-2">
+                                    <div>
+                                      <p className="font-['Manrope'] text-sm font-semibold text-[#1a1c1b]">{item.qty}× {item.name}</p>
+                                      {item.note ? <p className="mt-0.5 font-['Manrope'] text-xs text-[#4e4639] italic">"{item.note}"</p> : null}
+                                    </div>
+                                    <p className="font-['Manrope'] text-sm text-[#4e4639] shrink-0">{formatIdr(item.qty * item.price)}</p>
+                                  </div>
+                                ))}
+                              </div>
                             </div>
 
-                            <div className="space-y-2">
-                              {/* Status select — custom styled */}
-                              <div className="relative">
-                                <select
-                                  className="w-full appearance-none bg-[#f4f3f1] border-none rounded px-3 py-2 font-['Manrope'] text-sm text-[#1a1c1b] outline-none cursor-pointer"
-                                  value={order.status}
-                                  onChange={(e) => updateOrderStatus(order.id, e.target.value)}
-                                >
-                                  {ORDER_STATUSES.map((status) => (
-                                    <option key={status} value={status}>
-                                      {status.replaceAll('_', ' ')}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-
-                              <div className="flex gap-2">
-                                <button
-                                  className="flex-1 border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest py-2 rounded hover:bg-[#f4f3f1] transition-colors"
-                                  onClick={() => markAsRead(order.id)}
-                                  type="button"
-                                >
-                                  Mark Read
-                                </button>
-                                {(order.accessTokenId || order.guestUid) ? (
-                                  <button
-                                    className="flex-1 border border-[#d1c5b4]/50 text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest py-2 rounded hover:bg-[#ffdad6] transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
-                                    disabled={revokingSessionId === (order.accessTokenId || order.guestUid)}
-                                    onClick={() => handleRevokeGuest(order.accessTokenId || order.guestUid)}
-                                    type="button"
-                                  >
-                                    <ShieldBan className="h-3 w-3" />
-                                    Revoke
-                                  </button>
+                            <div className="p-5 flex flex-col gap-4">
+                              <div>
+                                <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.18em] text-[#4e4639] font-semibold mb-2">Guest</p>
+                                <div className="space-y-1 font-['Manrope'] text-sm text-[#1a1c1b]">
+                                  <p><span className="text-[#4e4639]">Name: </span>{order.lastName || '—'}</p>
+                                  <p><span className="text-[#4e4639]">Phone: </span>{order.phoneNumber || '—'}</p>
+                                  <p><span className="text-[#4e4639]">Payment: </span>{order.paymentMethod}</p>
+                                  <p><span className="text-[#4e4639]">Rating: </span>{order.rating ? `${order.rating}/5` : 'Pending'}</p>
+                                </div>
+                                {(order.feedbackText || order.feedbackSummary) ? (
+                                  <p className="mt-2 font-['Manrope'] text-xs text-[#4e4639] italic leading-5">
+                                    "{order.feedbackText || order.feedbackSummary}"
+                                  </p>
                                 ) : null}
                               </div>
+
+                              <div className="space-y-2">
+                                <div className="relative">
+                                  <select
+                                    className="w-full appearance-none bg-[#f4f3f1] border-none rounded px-3 py-2 font-['Manrope'] text-sm text-[#1a1c1b] outline-none cursor-pointer"
+                                    value={order.status}
+                                    onChange={(e) => updateOrderStatus(order.id, e.target.value)}
+                                  >
+                                    {ORDER_STATUSES.map((s) => (
+                                      <option key={s} value={s}>{s.replaceAll('_', ' ')}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div className="flex gap-2">
+                                  <button
+                                    className="flex-1 border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest py-2 rounded hover:bg-[#f4f3f1] transition-colors"
+                                    onClick={() => markAsRead(order.id)} type="button"
+                                  >
+                                    Mark Read
+                                  </button>
+                                  {(order.accessTokenId || order.guestUid) ? (
+                                    <button
+                                      className="flex-1 border border-[#d1c5b4]/50 text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest py-2 rounded hover:bg-[#ffdad6] transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
+                                      disabled={revokingSessionId === (order.accessTokenId || order.guestUid)}
+                                      onClick={() => handleRevokeGuest(order.accessTokenId || order.guestUid)}
+                                      type="button"
+                                    >
+                                      <ShieldBan className="h-3 w-3" />
+                                      Revoke
+                                    </button>
+                                  ) : null}
+                                </div>
+                              </div>
                             </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
             ) : null}
 
-            {/* ── Menu Manager ── */}
+            {/* ══════════════════════════════════════════
+                MENU MANAGER
+            ══════════════════════════════════════════ */}
             {activeTab === 'menu' ? (
               <div className="space-y-6">
                 <div className="bg-white rounded p-5 shadow-[0_8px_24px_rgba(26,28,27,0.03)] flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                   <div>
                     <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">Menu readiness</p>
                     <p className="mt-1.5 font-['Manrope'] text-sm leading-6 text-[#4e4639]">
-                      Mark dishes and beverages as ready or unavailable, edit details, and remove items.
+                      Mark dishes as ready or unavailable, edit details, and remove items.
                     </p>
                   </div>
                   <div className="flex gap-3 flex-wrap">
@@ -935,15 +1026,13 @@ export default function HouseApp() {
                       <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#4e4639]" />
                       <input
                         className="bg-[#f4f3f1] border-none rounded pl-9 pr-4 py-2.5 font-['Manrope'] text-sm text-[#1a1c1b] outline-none placeholder:text-[#4e4639]/50 w-56"
-                        placeholder="Search menu"
-                        value={menuSearch}
+                        placeholder="Search menu" value={menuSearch}
                         onChange={(e) => setMenuSearch(e.target.value)}
                       />
                     </div>
                     <button
                       className="flex items-center gap-2 bg-[#1a1c1b] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-4 py-2.5 rounded hover:bg-[#1a1c1b]/90 transition-colors"
-                      onClick={() => setEditingProduct(getEditorState())}
-                      type="button"
+                      onClick={() => setEditingProduct(getEditorState())} type="button"
                     >
                       <Plus className="h-3.5 w-3.5" />
                       Add Item
@@ -961,27 +1050,21 @@ export default function HouseApp() {
                             <p className="font-['Manrope'] text-xs text-[#4e4639] mt-0.5">{product.category}</p>
                           </div>
                           <span className={`rounded px-2 py-0.5 font-['Manrope'] text-[10px] uppercase tracking-widest font-semibold shrink-0 ${
-                            product.isAvailable
-                              ? 'bg-emerald-50 text-emerald-700'
-                              : 'bg-[#ffdad6] text-[#93000a]'
+                            product.isAvailable ? 'bg-emerald-50 text-emerald-700' : 'bg-[#ffdad6] text-[#93000a]'
                           }`}>
                             {product.isAvailable ? 'Ready' : 'Unavailable'}
                           </span>
                         </div>
-
                         <p className="mt-3 font-['Manrope'] text-sm leading-6 text-[#4e4639]">{product.description}</p>
-
                         <div className="mt-3 bg-[#f4f3f1] px-4 py-2.5 rounded">
                           <p className="font-['Manrope'] text-[10px] uppercase tracking-widest text-[#4e4639]">Guest price</p>
                           <p className="font-['Noto_Serif'] text-base font-semibold text-[#775a19] mt-0.5">{formatIdr(product.price)}</p>
                         </div>
-
                         {product.unavailableReason ? (
                           <p className="mt-3 font-['Manrope'] text-xs text-[#ba1a1a] bg-[#ffdad6] px-3 py-2 rounded">
                             {product.unavailableReason}
                           </p>
                         ) : null}
-
                         <div className="mt-4 flex flex-wrap gap-2">
                           <button
                             className={`font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-3 py-2 rounded transition-colors ${
@@ -989,23 +1072,20 @@ export default function HouseApp() {
                                 ? 'border border-[#d1c5b4]/50 text-[#4e4639] hover:bg-[#f4f3f1]'
                                 : 'bg-[#775a19] text-white hover:bg-[#775a19]/90'
                             }`}
-                            onClick={() => toggleProductAvailability(product)}
-                            type="button"
+                            onClick={() => toggleProductAvailability(product)} type="button"
                           >
                             {product.isAvailable ? 'Set Unavailable' : 'Set Ready'}
                           </button>
                           <button
                             className="flex items-center gap-1 border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-3 py-2 rounded hover:bg-[#f4f3f1] transition-colors"
-                            onClick={() => setEditingProduct(getEditorState(product))}
-                            type="button"
+                            onClick={() => setEditingProduct(getEditorState(product))} type="button"
                           >
                             <PencilLine className="h-3 w-3" />
                             Edit
                           </button>
                           <button
                             className="border border-[#d1c5b4]/50 text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-3 py-2 rounded hover:bg-[#ffdad6] transition-colors"
-                            onClick={() => deleteProduct(product.id)}
-                            type="button"
+                            onClick={() => deleteProduct(product.id)} type="button"
                           >
                             Remove
                           </button>
@@ -1017,7 +1097,9 @@ export default function HouseApp() {
               </div>
             ) : null}
 
-            {/* ── Feedback ── */}
+            {/* ══════════════════════════════════════════
+                FEEDBACK
+            ══════════════════════════════════════════ */}
             {activeTab === 'feedback' ? (
               <div className="space-y-6">
                 <div className="grid gap-4 md:grid-cols-3">
@@ -1064,7 +1146,6 @@ export default function HouseApp() {
                             ) : null}
                           </div>
                         </div>
-
                         <div className="mt-4 bg-[#f4f3f1] p-4 rounded font-['Manrope'] text-sm leading-6 text-[#4e4639] italic">
                           "{order.feedbackText || order.feedbackSummary || 'Guest submitted a rating without written comments.'}"
                         </div>
@@ -1075,7 +1156,9 @@ export default function HouseApp() {
               </div>
             ) : null}
 
-            {/* ── Revenue ── */}
+            {/* ══════════════════════════════════════════
+                REVENUE
+            ══════════════════════════════════════════ */}
             {activeTab === 'revenue' ? (
               <ManagerOnly role={identity.role}>
                 <div className="space-y-6">
@@ -1089,14 +1172,12 @@ export default function HouseApp() {
                     <div className="flex gap-3 flex-wrap">
                       <input
                         className="bg-[#f4f3f1] border-none rounded px-4 py-2.5 font-['Manrope'] text-sm text-[#1a1c1b] outline-none"
-                        type="date"
-                        value={selectedDate}
+                        type="date" value={selectedDate}
                         onChange={(e) => setSelectedDate(e.target.value)}
                       />
                       <button
                         className="bg-[#1a1c1b] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-2.5 rounded hover:bg-[#1a1c1b]/90 transition-colors"
-                        onClick={exportRevenue}
-                        type="button"
+                        onClick={exportRevenue} type="button"
                       >
                         Export to Excel
                       </button>
@@ -1138,10 +1219,104 @@ export default function HouseApp() {
               </ManagerOnly>
             ) : null}
 
-            {/* ── Settings ── */}
+            {/* ══════════════════════════════════════════
+                SHIFT HANDOVER NOTES
+            ══════════════════════════════════════════ */}
+            {activeTab === 'handover' ? (
+              <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+                {/* Compose note */}
+                <div className="bg-white rounded p-6 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                  <div className="flex items-center gap-3 mb-5">
+                    <BookOpen className="h-5 w-5 text-[#775a19]" />
+                    <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Leave a Note</h3>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">Shift</p>
+                      <div className="flex gap-2 flex-wrap">
+                        {(['morning', 'afternoon', 'night'] as ShiftName[]).map((s) => (
+                          <button
+                            key={s}
+                            className={`font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-3 py-2 rounded transition-colors ${
+                              activeShift === s
+                                ? 'bg-[#1a1c1b] text-white'
+                                : 'border border-[#d1c5b4]/50 text-[#4e4639] hover:bg-[#f4f3f1]'
+                            }`}
+                            onClick={() => setActiveShift(s)} type="button"
+                          >
+                            {s}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="mt-2 font-['Manrope'] text-xs text-[#4e4639]">{SHIFT_LABELS[activeShift]}</p>
+                    </div>
+
+                    <div>
+                      <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">Note</p>
+                      <textarea
+                        className="w-full bg-[#f4f3f1] border-none rounded px-4 py-3 font-['Manrope'] text-sm text-[#1a1c1b] outline-none resize-none min-h-[140px] placeholder:text-[#4e4639]/50"
+                        placeholder="e.g. Suite 402 guest requires dairy-free options. Fryer #2 is under maintenance until 18:00."
+                        value={handoverDraft}
+                        onChange={(e) => setHandoverDraft(e.target.value)}
+                      />
+                    </div>
+
+                    <button
+                      className="w-full bg-[#775a19] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold py-3 rounded hover:bg-[#775a19]/90 transition-colors shadow-[0_4px_14px_rgba(119,90,25,0.2)] disabled:opacity-50"
+                      disabled={!handoverDraft.trim() || isSavingNote}
+                      onClick={saveHandoverNote} type="button"
+                    >
+                      {isSavingNote ? 'Saving…' : 'Post Note'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Notes per shift */}
+                <div className="space-y-4">
+                  {(['morning', 'afternoon', 'night'] as ShiftName[]).map((s) => {
+                    const notes = shiftNotesByShift[s];
+                    return (
+                      <div key={s} className="bg-white rounded p-5 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                        <div className="flex items-center justify-between mb-4">
+                          <div>
+                            <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">{s}</p>
+                            <p className="font-['Manrope'] text-xs text-[#4e4639]/70 mt-0.5">{SHIFT_LABELS[s]}</p>
+                          </div>
+                          <span className="font-['Manrope'] text-[10px] uppercase tracking-widest text-[#4e4639]">
+                            {notes.length} {notes.length === 1 ? 'note' : 'notes'}
+                          </span>
+                        </div>
+
+                        {notes.length === 0 ? (
+                          <p className="font-['Manrope'] text-sm text-[#4e4639]/60 italic">No notes for this shift yet.</p>
+                        ) : (
+                          <div className="space-y-3">
+                            {notes.slice(0, 5).map((note) => (
+                              <div key={note.id} className="bg-[#f4f3f1] rounded p-4">
+                                <p className="font-['Manrope'] text-sm text-[#1a1c1b] leading-6">{note.note}</p>
+                                <div className="mt-2 flex items-center justify-between">
+                                  <span className="font-['Manrope'] text-[10px] text-[#4e4639] font-semibold">{note.authorName}</span>
+                                  <span className="font-['Manrope'] text-[10px] text-[#4e4639]/70">
+                                    {note.createdAt ? note.createdAt.toLocaleString() : '—'}
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
+            {/* ══════════════════════════════════════════
+                SETTINGS
+            ══════════════════════════════════════════ */}
             {activeTab === 'settings' ? (
               <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-                {/* Guest QR */}
                 <div className="bg-white rounded p-6 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
                   <div className="flex items-center gap-3 mb-6">
                     <QrCode className="h-5 w-5 text-[#775a19]" />
@@ -1157,38 +1332,29 @@ export default function HouseApp() {
                         { label: 'Expiry (minutes)', value: expiresInMinutes, onChange: setExpiresInMinutes, placeholder: '720' },
                       ].map((field) => (
                         <UnderlineInput
-                          key={field.label}
-                          id={field.label}
-                          label={field.label}
-                          value={field.value}
-                          placeholder={field.placeholder}
-                          onChange={field.onChange}
+                          key={field.label} id={field.label} label={field.label}
+                          value={field.value} placeholder={field.placeholder} onChange={field.onChange}
                         />
                       ))}
 
                       <div className="flex flex-wrap gap-3 pt-2">
                         <button
                           className="bg-[#1a1c1b] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#1a1c1b]/90 transition-colors disabled:opacity-50"
-                          disabled={isGeneratingToken}
-                          onClick={handleGenerateQr}
-                          type="button"
+                          disabled={isGeneratingToken} onClick={handleGenerateQr} type="button"
                         >
                           {isGeneratingToken ? 'Generating…' : 'Generate QR'}
                         </button>
                         {tokenResult?.qrUrl ? (
                           <button
                             className="flex items-center gap-2 border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#f4f3f1] transition-colors"
-                            onClick={copyTokenUrl}
-                            type="button"
+                            onClick={copyTokenUrl} type="button"
                           >
                             <Copy className="h-3.5 w-3.5" />
                             Copy URL
                           </button>
                         ) : null}
                       </div>
-                      {tokenStatus ? (
-                        <p className="font-['Manrope'] text-xs text-[#4e4639]">{tokenStatus}</p>
-                      ) : null}
+                      {tokenStatus ? <p className="font-['Manrope'] text-xs text-[#4e4639]">{tokenStatus}</p> : null}
                     </div>
 
                     <div className="bg-[#f4f3f1] rounded p-5">
@@ -1217,9 +1383,7 @@ export default function HouseApp() {
                   </div>
                 </div>
 
-                {/* Right column */}
                 <div className="space-y-4">
-                  {/* Active operator */}
                   <div className="bg-white rounded p-6 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
                     <div className="flex items-center gap-3 mb-4">
                       <UserCircle2 className="h-5 w-5 text-[#775a19]" />
@@ -1232,24 +1396,16 @@ export default function HouseApp() {
                     </div>
                   </div>
 
-                  {/* Suggested modules */}
                   <div className="bg-white rounded p-6 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
                     <div className="flex items-center gap-3 mb-4">
                       <Sparkles className="h-5 w-5 text-[#775a19]" />
-                      <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Suggested Modules</h3>
+                      <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Audit Trail</h3>
                     </div>
-                    <div className="space-y-3">
-                      {[
-                        { title: '1. Shift handover log', desc: 'Short notes between morning, afternoon, and night staff.' },
-                        { title: '2. SLA warning card', desc: 'Highlight orders waiting too long before kitchen accepts them.' },
-                        { title: '3. Staff action audit', desc: 'Track who changed menu readiness or moved an order status.' },
-                      ].map((mod) => (
-                        <div key={mod.title} className="bg-[#f4f3f1] rounded p-4">
-                          <p className="font-['Manrope'] text-sm font-semibold text-[#1a1c1b]">{mod.title}</p>
-                          <p className="mt-0.5 font-['Manrope'] text-sm text-[#4e4639] leading-6">{mod.desc}</p>
-                        </div>
-                      ))}
-                    </div>
+                    <p className="font-['Manrope'] text-sm text-[#4e4639] leading-6">
+                      Every write action (order status changes, menu edits, availability toggles, guest session revokes, shift notes) is logged to the{' '}
+                      <code className="bg-[#f4f3f1] px-1.5 py-0.5 rounded text-xs text-[#1a1c1b]">auditLog</code>
+                      {' '}collection in Firestore with operator name, role, and timestamp.
+                    </p>
                   </div>
                 </div>
               </div>
@@ -1272,25 +1428,22 @@ export default function HouseApp() {
               </div>
               <button
                 className="border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest px-3 py-1.5 rounded hover:bg-[#f4f3f1] transition-colors shrink-0"
-                onClick={() => setEditingProduct(null)}
-                type="button"
+                onClick={() => setEditingProduct(null)} type="button"
               >
                 Close
               </button>
             </div>
 
             <div className="p-6 grid gap-5 md:grid-cols-2">
-              {[
+              {([
                 { label: 'Item Name', key: 'name' as const },
                 { label: 'Category', key: 'category' as const },
                 { label: 'Price', key: 'price' as const },
                 { label: 'Image URL', key: 'image' as const },
-              ].map((field) => (
+              ] as { label: string; key: keyof MenuEditorState }[]).map((field) => (
                 <UnderlineInput
-                  key={field.key}
-                  id={field.key}
-                  label={field.label}
-                  value={editingProduct[field.key]}
+                  key={field.key} id={field.key} label={field.label}
+                  value={String(editingProduct[field.key])}
                   onChange={(v) => setEditingProduct((c) => c ? { ...c, [field.key]: v } : c)}
                 />
               ))}
@@ -1308,8 +1461,7 @@ export default function HouseApp() {
 
               <div className="md:col-span-2">
                 <UnderlineInput
-                  id="unavailableReason"
-                  label="Unavailable Reason"
+                  id="unavailableReason" label="Unavailable Reason"
                   value={editingProduct.unavailableReason}
                   placeholder="Kitchen prep exhausted for this shift"
                   onChange={(v) => setEditingProduct((c) => c ? { ...c, unavailableReason: v } : c)}
@@ -1319,8 +1471,7 @@ export default function HouseApp() {
               <label className="md:col-span-2 flex items-center gap-3 bg-[#f4f3f1] px-4 py-3 rounded font-['Manrope'] text-sm text-[#1a1c1b] cursor-pointer">
                 <input
                   checked={editingProduct.isAvailable}
-                  className="w-4 h-4 accent-[#775a19]"
-                  type="checkbox"
+                  className="w-4 h-4 accent-[#775a19]" type="checkbox"
                   onChange={(e) => setEditingProduct((c) => c ? { ...c, isAvailable: e.target.checked } : c)}
                 />
                 Ready for guest ordering
@@ -1330,15 +1481,13 @@ export default function HouseApp() {
             <div className="px-6 pb-6 flex flex-wrap gap-3">
               <button
                 className="bg-[#775a19] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#775a19]/90 transition-colors shadow-[0_4px_14px_rgba(119,90,25,0.2)]"
-                onClick={() => saveProduct(editingProduct)}
-                type="button"
+                onClick={() => saveProduct(editingProduct)} type="button"
               >
                 Save Menu Item
               </button>
               <button
                 className="border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#f4f3f1] transition-colors"
-                onClick={() => setEditingProduct(null)}
-                type="button"
+                onClick={() => setEditingProduct(null)} type="button"
               >
                 Cancel
               </button>
