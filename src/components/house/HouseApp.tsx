@@ -15,10 +15,16 @@ import {
 import { User, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { auth, db } from '../../lib/firebase';
 import { createGuestQrToken, revokeGuestSessionAsAdmin } from '../../lib/adminAccess';
+import {
+  createAdminUser,
+  deleteAdminUser,
+  updateAdminPassword,
+  updateAdminProfile,
+} from '../../lib/adminTeam';
 import { useDynamicTitle } from '../../hooks/useDynamicTitle';
 import { useWakeLock } from '../../hooks/useWakeLock';
 import { getNewIncomingOrderIds } from '../../admin/notifications';
-import { buildRevenueExport, summarizeRevenue } from '../../admin/revenue';
+import { buildRevenueExport } from '../../admin/revenue';
 import { resolveAdminSession, type AdminRole } from '../../admin/session';
 
 type AdminTab = 'orders' | 'menu' | 'feedback' | 'revenue' | 'handover' | 'settings';
@@ -92,18 +98,44 @@ interface ShiftNote {
   createdAt: Date | null;
 }
 
-const ORDER_STATUSES = [
-  'incoming',
-  'confirmed',
-  'kitchen',
-  'preparing',
-  'quality_check',
-  'delivery',
-  'on_the_way',
-  'delivered',
-  'completed',
-  'cancelled',
-];
+interface StaffAccount {
+  uid: string;
+  name: string;
+  email: string;
+  username: string;
+  role: AdminRole;
+  active: boolean;
+  createdAt: Date | null;
+  lastUpdatedAt: Date | null;
+}
+
+interface StaffEditorState {
+  uid?: string;
+  name: string;
+  email: string;
+  username: string;
+  role: AdminRole;
+  active: boolean;
+  password: string;
+}
+
+interface RevenueMenuLeader {
+  name: string;
+  image: string;
+  orders: number;
+  revenue: number;
+}
+
+interface RevenueSegment {
+  label: string;
+  revenue: number;
+  percent: number;
+}
+
+interface RevenueTrendPoint {
+  label: string;
+  value: number;
+}
 
 const TERMINAL_STATUSES = new Set(['delivered', 'completed', 'cancelled']);
 const SLA_THRESHOLD_MS = 20 * 60 * 1000; // 20 minutes
@@ -151,6 +183,124 @@ function formatIdr(value: number): string {
     currency: 'IDR',
     minimumFractionDigits: 0,
   }).format(value);
+}
+
+function formatCompactCurrency(value: number): string {
+  if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}M`;
+  if (value >= 1_000) return `${Math.round(value / 100) / 10}k`;
+  return `${Math.round(value)}`;
+}
+
+function formatStatusLabel(status: string): string {
+  return status.replaceAll('_', ' ');
+}
+
+function formatRelativeTime(date: Date | null): string {
+  if (!date) return 'Unknown time';
+  const diffMinutes = Math.max(1, Math.round((Date.now() - date.getTime()) / 60000));
+  if (diffMinutes < 60) return `${diffMinutes}m ago`;
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+  const diffDays = Math.round(diffHours / 24);
+  return `${diffDays}d ago`;
+}
+
+function formatFeedbackTime(date: Date | null): string {
+  if (!date) return 'Recently';
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date);
+}
+
+function startOfDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function addDays(date: Date, amount: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + amount);
+  return next;
+}
+
+function addMonths(date: Date, amount: number): Date {
+  const next = new Date(date);
+  next.setMonth(next.getMonth() + amount);
+  return next;
+}
+
+function getWeekStart(date: Date): Date {
+  const day = date.getDay();
+  const offset = day === 0 ? -6 : 1 - day;
+  return startOfDay(addDays(date, offset));
+}
+
+function isWithinRange(date: Date | null, start: Date, end: Date): boolean {
+  if (!date) return false;
+  return date >= start && date < end;
+}
+
+function getRevenuePeriodBounds(anchor: Date, range: 'daily' | 'weekly' | 'monthly'): {
+  currentStart: Date;
+  currentEnd: Date;
+  previousStart: Date;
+  previousEnd: Date;
+} {
+  if (range === 'weekly') {
+    const currentStart = getWeekStart(anchor);
+    const currentEnd = addDays(currentStart, 7);
+    return {
+      currentStart,
+      currentEnd,
+      previousStart: addDays(currentStart, -7),
+      previousEnd: currentStart,
+    };
+  }
+
+  if (range === 'monthly') {
+    const currentStart = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+    const currentEnd = addMonths(currentStart, 1);
+    return {
+      currentStart,
+      currentEnd,
+      previousStart: addMonths(currentStart, -1),
+      previousEnd: currentStart,
+    };
+  }
+
+  const currentStart = startOfDay(anchor);
+  const currentEnd = addDays(currentStart, 1);
+  return {
+    currentStart,
+    currentEnd,
+    previousStart: addDays(currentStart, -1),
+    previousEnd: currentStart,
+  };
+}
+
+function getOrderNextAction(status: string): { label: string; nextStatus: string } | null {
+  switch (status) {
+    case 'incoming':
+      return { label: 'Accept Order', nextStatus: 'confirmed' };
+    case 'confirmed':
+      return { label: 'Send to Kitchen', nextStatus: 'kitchen' };
+    case 'kitchen':
+      return { label: 'Start Prep', nextStatus: 'preparing' };
+    case 'preparing':
+      return { label: 'Mark Ready', nextStatus: 'quality_check' };
+    case 'quality_check':
+      return { label: 'Dispatch Order', nextStatus: 'delivery' };
+    case 'delivery':
+      return { label: 'On The Way', nextStatus: 'on_the_way' };
+    case 'on_the_way':
+      return { label: 'Mark Delivered', nextStatus: 'delivered' };
+    case 'delivered':
+      return { label: 'Complete Order', nextStatus: 'completed' };
+    default:
+      return null;
+  }
 }
 
 function isOrderSlaBreached(order: DashboardOrder): boolean {
@@ -233,6 +383,23 @@ function normalizeShiftNote(docId: string, data: Record<string, unknown>): Shift
   };
 }
 
+function normalizeStaffAccount(docId: string, data: Record<string, unknown>): StaffAccount {
+  return {
+    uid: docId,
+    name: typeof data.name === 'string' ? data.name : 'Unknown',
+    email: typeof data.email === 'string' ? data.email : '',
+    username: typeof data.username === 'string' ? data.username : '',
+    role: normalizeRole(data.role),
+    active: data.active !== false,
+    createdAt: data.createdAt && typeof data.createdAt === 'object' && 'toDate' in data.createdAt
+      ? (data.createdAt as { toDate: () => Date }).toDate()
+      : null,
+    lastUpdatedAt: data.updatedAt && typeof data.updatedAt === 'object' && 'toDate' in data.updatedAt
+      ? (data.updatedAt as { toDate: () => Date }).toDate()
+      : null,
+  };
+}
+
 function getEditorState(product?: MenuProduct): MenuEditorState {
   return {
     id: product?.id,
@@ -243,6 +410,18 @@ function getEditorState(product?: MenuProduct): MenuEditorState {
     image: product?.image || '',
     isAvailable: product ? product.isAvailable : true,
     unavailableReason: product?.unavailableReason || '',
+  };
+}
+
+function getStaffEditorState(staff?: StaffAccount): StaffEditorState {
+  return {
+    uid: staff?.uid,
+    name: staff?.name || '',
+    email: staff?.email || '',
+    username: staff?.username || '',
+    role: staff?.role || 'staff',
+    active: staff ? staff.active : true,
+    password: '',
   };
 }
 
@@ -310,13 +489,16 @@ export default function HouseApp() {
   const [orders, setOrders] = useState<DashboardOrder[]>([]);
   const [products, setProducts] = useState<MenuProduct[]>([]);
   const [shiftNotes, setShiftNotes] = useState<ShiftNote[]>([]);
+  const [staffAccounts, setStaffAccounts] = useState<StaffAccount[]>([]);
 
   // UI state
-  const [menuSearch, setMenuSearch] = useState('');
   const [shellSearch, setShellSearch] = useState('');
   const [editingProduct, setEditingProduct] = useState<MenuEditorState | null>(null);
   const [notificationMessage, setNotificationMessage] = useState('');
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [feedbackSearch, setFeedbackSearch] = useState('');
+  const [feedbackFilter, setFeedbackFilter] = useState<'all' | '5' | '4' | 'week'>('all');
+  const [revenueRange, setRevenueRange] = useState<'daily' | 'weekly' | 'monthly'>('daily');
 
   // Settings / QR
   const [hotelId, setHotelId] = useState('atelier-meridian-demo');
@@ -327,6 +509,10 @@ export default function HouseApp() {
   const [tokenStatus, setTokenStatus] = useState('');
   const [isGeneratingToken, setIsGeneratingToken] = useState(false);
   const [revokingSessionId, setRevokingSessionId] = useState<string | null>(null);
+  const [teamStatus, setTeamStatus] = useState('');
+  const [staffEditor, setStaffEditor] = useState<StaffEditorState | null>(null);
+  const [isSavingStaff, setIsSavingStaff] = useState(false);
+  const [passwordResetUid, setPasswordResetUid] = useState<string | null>(null);
 
   // Shift handover
   const [activeShift, setActiveShift] = useState<ShiftName>('morning');
@@ -368,28 +554,218 @@ export default function HouseApp() {
     if (!rated.length) return '-';
     return (rated.reduce((s, o) => s + Number(o.rating || 0), 0) / rated.length).toFixed(1);
   }, [orders]);
+  const averagePrepMinutes = useMemo(() => {
+    const timedOrders = activeOrders.filter((order) => order.createdAt);
+    if (!timedOrders.length) return 0;
+    const totalMinutes = timedOrders.reduce((sum, order) => (
+      sum + Math.max(1, Math.round((Date.now() - (order.createdAt as Date).getTime()) / 60000))
+    ), 0);
+    return Math.round(totalMinutes / timedOrders.length);
+  }, [activeOrders]);
   const filteredProducts = useMemo(() => {
-    const q = menuSearch.trim().toLowerCase();
+    const q = (activeTab === 'menu' ? shellSearch : '').trim().toLowerCase();
     if (!q) return products;
     return products.filter((p) =>
       p.name.toLowerCase().includes(q) || p.category.toLowerCase().includes(q) || p.description.toLowerCase().includes(q),
     );
-  }, [products, menuSearch]);
-  const revenueSummary = useMemo(
-    () => summarizeRevenue(
-      orders.map((o) => ({
-        id: o.id, roomNumber: o.roomNumber, total: o.total,
-        status: o.status, paymentMethod: o.paymentMethod, createdAt: o.createdAt,
-      })),
-      new Date(`${selectedDate}T12:00:00`),
-    ),
-    [orders, selectedDate],
+  }, [activeTab, products, shellSearch]);
+  const menuCategories = useMemo(() => ['All', ...Array.from(new Set(products.map((p) => p.category)))], [products]);
+  const [activeMenuCategory, setActiveMenuCategory] = useState('All');
+  const visibleProducts = useMemo(() => (
+    activeMenuCategory === 'All'
+      ? filteredProducts
+      : filteredProducts.filter((product) => product.category === activeMenuCategory)
+  ), [activeMenuCategory, filteredProducts]);
+  const revenueAnchorDate = useMemo(() => new Date(`${selectedDate}T12:00:00`), [selectedDate]);
+  const revenuePeriodBounds = useMemo(
+    () => getRevenuePeriodBounds(revenueAnchorDate, revenueRange),
+    [revenueAnchorDate, revenueRange],
   );
+  const revenueRows = useMemo(
+    () => orders
+      .filter((order) => ['delivered', 'completed'].includes(order.status))
+      .filter((order) => isWithinRange(order.createdAt, revenuePeriodBounds.currentStart, revenuePeriodBounds.currentEnd))
+      .map((order) => ({
+        id: order.id,
+        roomNumber: order.roomNumber,
+        paymentMethod: order.paymentMethod,
+        total: order.total,
+        createdAt: order.createdAt as Date,
+      })),
+    [orders, revenuePeriodBounds],
+  );
+  const previousRevenueRows = useMemo(
+    () => orders
+      .filter((order) => ['delivered', 'completed'].includes(order.status))
+      .filter((order) => isWithinRange(order.createdAt, revenuePeriodBounds.previousStart, revenuePeriodBounds.previousEnd))
+      .map((order) => ({
+        id: order.id,
+        roomNumber: order.roomNumber,
+        paymentMethod: order.paymentMethod,
+        total: order.total,
+        createdAt: order.createdAt as Date,
+      })),
+    [orders, revenuePeriodBounds],
+  );
+  const revenueSummary = useMemo(() => ({
+    kpi: {
+      revenue: revenueRows.reduce((sum, row) => sum + row.total, 0),
+      completedOrders: revenueRows.length,
+      cancelledOrders: orders.filter(
+        (order) => order.status === 'cancelled'
+          && isWithinRange(order.createdAt, revenuePeriodBounds.currentStart, revenuePeriodBounds.currentEnd),
+      ).length,
+    },
+    rows: revenueRows,
+  }), [orders, revenuePeriodBounds, revenueRows]);
+  const revenueOverview = useMemo(() => {
+    const currentRevenue = revenueRows.reduce((sum, row) => sum + row.total, 0);
+    const previousRevenue = previousRevenueRows.reduce((sum, row) => sum + row.total, 0);
+    const averageOrderValue = revenueRows.length ? currentRevenue / revenueRows.length : 0;
+    const previousAverage = previousRevenueRows.length ? previousRevenue / previousRevenueRows.length : 0;
+    const totalOrders = revenueRows.length;
+    const previousOrders = previousRevenueRows.length;
+    const getDelta = (current: number, previous: number) => {
+      if (!previous) return current ? 100 : 0;
+      return ((current - previous) / previous) * 100;
+    };
+    return {
+      revenue: currentRevenue,
+      averageOrderValue,
+      totalOrders,
+      revenueDelta: getDelta(currentRevenue, previousRevenue),
+      averageDelta: getDelta(averageOrderValue, previousAverage),
+      ordersDelta: getDelta(totalOrders, previousOrders),
+    };
+  }, [previousRevenueRows, revenueRows]);
+  const revenueTrend = useMemo<RevenueTrendPoint[]>(() => {
+    if (revenueRange === 'monthly') {
+      const start = new Date(revenueAnchorDate.getFullYear(), revenueAnchorDate.getMonth(), 1);
+      const labels = ['Week 1', 'Week 2', 'Week 3', 'Week 4'];
+      return labels.map((label, index) => {
+        const bucketStart = addDays(start, index * 7);
+        const bucketEnd = index === labels.length - 1 ? addMonths(start, 1) : addDays(start, (index + 1) * 7);
+        const value = orders
+          .filter((order) => ['delivered', 'completed'].includes(order.status))
+          .filter((order) => isWithinRange(order.createdAt, bucketStart, bucketEnd))
+          .reduce((sum, order) => sum + order.total, 0);
+        return { label, value };
+      });
+    }
+
+    const start = revenueRange === 'weekly' ? revenuePeriodBounds.currentStart : addDays(startOfDay(revenueAnchorDate), -6);
+    const totalPoints = revenueRange === 'weekly' ? 7 : 7;
+    return Array.from({ length: totalPoints }, (_, index) => {
+      const bucketStart = addDays(start, index);
+      const bucketEnd = addDays(bucketStart, 1);
+      const value = orders
+        .filter((order) => ['delivered', 'completed'].includes(order.status))
+        .filter((order) => isWithinRange(order.createdAt, bucketStart, bucketEnd))
+        .reduce((sum, order) => sum + order.total, 0);
+      const label = bucketStart.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
+      return { label, value };
+    });
+  }, [orders, revenueAnchorDate, revenuePeriodBounds.currentStart, revenueRange]);
+  const revenueLeaders = useMemo<RevenueMenuLeader[]>(() => {
+    const completedOrders = orders.filter((order) => (
+      ['delivered', 'completed'].includes(order.status)
+      && isWithinRange(order.createdAt, revenuePeriodBounds.currentStart, revenuePeriodBounds.currentEnd)
+    ));
+    const byItem = new Map<string, RevenueMenuLeader>();
+    for (const order of completedOrders) {
+      for (const item of order.items) {
+        const current = byItem.get(item.name);
+        const matchedProduct = products.find((product) => product.name === item.name);
+        byItem.set(item.name, {
+          name: item.name,
+          image: current?.image || matchedProduct?.image || '',
+          orders: (current?.orders || 0) + item.qty,
+          revenue: (current?.revenue || 0) + (item.qty * item.price),
+        });
+      }
+    }
+    return Array.from(byItem.values()).sort((a, b) => b.revenue - a.revenue).slice(0, 4);
+  }, [orders, products, revenuePeriodBounds]);
+  const revenueDistribution = useMemo<RevenueSegment[]>(() => {
+    const completedOrders = orders.filter((order) => (
+      ['delivered', 'completed'].includes(order.status)
+      && isWithinRange(order.createdAt, revenuePeriodBounds.currentStart, revenuePeriodBounds.currentEnd)
+    ));
+    const totals = new Map<string, number>();
+    for (const order of completedOrders) {
+      const hour = order.createdAt ? order.createdAt.getHours() : 0;
+      const label = hour < 14
+        ? 'Breakfast / Brunch'
+        : hour < 18
+          ? 'Beverage & Wine'
+          : 'Dinner Service';
+      totals.set(label, (totals.get(label) || 0) + order.total);
+    }
+    const totalRevenue = Array.from(totals.values()).reduce((sum, value) => sum + value, 0);
+    return Array.from(totals.entries())
+      .map(([label, revenue]) => ({
+        label,
+        revenue,
+        percent: totalRevenue ? Math.round((revenue / totalRevenue) * 100) : 0,
+      }))
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 3);
+  }, [orders, revenuePeriodBounds]);
+  const visibleOrders = useMemo(() => {
+    const queryText = '';
+    return activeOrders.filter((order) => {
+      if (!queryText) return true;
+      return [
+        order.roomNumber,
+        order.lastName,
+        order.status,
+        ...order.items.map((item) => item.name),
+      ].some((value) => value.toLowerCase().includes(queryText));
+    });
+  }, [activeOrders]);
+  const visibleStaffAccounts = useMemo(() => {
+    const queryText = (activeTab === 'settings' ? shellSearch : '').trim().toLowerCase();
+    if (!queryText) return staffAccounts;
+    return staffAccounts.filter((staff) => (
+      [staff.name, staff.email, staff.username, staff.role].some((value) => value.toLowerCase().includes(queryText))
+    ));
+  }, [activeTab, shellSearch, staffAccounts]);
   const shiftNotesByShift = useMemo(() => {
     const out: Record<ShiftName, ShiftNote[]> = { morning: [], afternoon: [], night: [] };
     for (const n of shiftNotes) out[n.shift].push(n);
     return out;
   }, [shiftNotes]);
+  const filteredFeedbackOrders = useMemo(() => {
+    const queryText = feedbackSearch.trim().toLowerCase();
+    return feedbackOrders.filter((order) => {
+      const matchesSearch = !queryText || [
+        order.roomNumber,
+        order.lastName,
+        order.feedbackText,
+        order.feedbackSummary,
+      ].some((value) => value.toLowerCase().includes(queryText));
+      const matchesFilter = feedbackFilter === 'all'
+        || String(order.rating ?? '') === feedbackFilter
+        || (
+          feedbackFilter === 'week'
+          && Boolean(order.createdAt)
+          && (Date.now() - (order.createdAt as Date).getTime()) <= (7 * 24 * 60 * 60 * 1000)
+        );
+      return matchesSearch && matchesFilter;
+    });
+  }, [feedbackFilter, feedbackOrders, feedbackSearch]);
+  const feedbackHeroOrder = filteredFeedbackOrders[0] || null;
+  const feedbackSideOrder = filteredFeedbackOrders[1] || null;
+  const feedbackIssueOrder = filteredFeedbackOrders.find((order) => (
+    order.id !== feedbackHeroOrder?.id
+    && order.id !== feedbackSideOrder?.id
+    && (order.managerFollowUpRequested || (order.rating !== null && order.rating <= 3))
+  )) || filteredFeedbackOrders[2] || null;
+  const feedbackStoryOrder = filteredFeedbackOrders.find((order) => (
+    order.id !== feedbackHeroOrder?.id
+    && order.id !== feedbackSideOrder?.id
+    && order.id !== feedbackIssueOrder?.id
+  )) || filteredFeedbackOrders[3] || null;
 
   useDynamicTitle(unreadIncomingOrders.length);
   useWakeLock();
@@ -414,7 +790,7 @@ export default function HouseApp() {
 
   /* ── Firestore subscriptions ── */
   useEffect(() => {
-    if (!identity) { setOrders([]); setProducts([]); setShiftNotes([]); return; }
+    if (!identity) { setOrders([]); setProducts([]); setShiftNotes([]); setStaffAccounts([]); return; }
 
     const unsubOrders = onSnapshot(
       query(collection(db, 'orders'), orderBy('createdAt', 'desc')),
@@ -442,7 +818,15 @@ export default function HouseApp() {
       },
     );
 
-    return () => { unsubOrders(); unsubProducts(); unsubNotes(); };
+    const unsubStaff = onSnapshot(collection(db, 'admin_users'), (snap) => {
+      setStaffAccounts(
+        snap.docs
+          .map((d) => normalizeStaffAccount(d.id, d.data() as Record<string, unknown>))
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      );
+    });
+
+    return () => { unsubOrders(); unsubProducts(); unsubNotes(); unsubStaff(); };
   }, [identity]);
 
   /* ── Nav ── */
@@ -638,6 +1022,74 @@ export default function HouseApp() {
       setHandoverDraft('');
     } finally {
       setIsSavingNote(false);
+    }
+  }
+
+  async function saveStaffAccount(editor: StaffEditorState) {
+    if (!identity) return;
+    setIsSavingStaff(true);
+    setTeamStatus('');
+    try {
+      if (editor.uid) {
+        await updateAdminProfile({
+          uid: editor.uid,
+          name: editor.name.trim(),
+          username: editor.username.trim(),
+          role: editor.role,
+          active: editor.active,
+        });
+        if (editor.password.trim()) {
+          await updateAdminPassword({ uid: editor.uid, newPassword: editor.password.trim() });
+        }
+        await logAudit('update_admin_user', 'guestSession', editor.uid, { role: editor.role, active: editor.active });
+        setTeamStatus('Staff access updated.');
+      } else {
+        await createAdminUser({
+          email: editor.email.trim(),
+          password: editor.password.trim(),
+          name: editor.name.trim(),
+          username: editor.username.trim(),
+          role: editor.role,
+          hotelId,
+          active: editor.active,
+        });
+        await logAudit('create_admin_user', 'guestSession', editor.email.trim(), { role: editor.role });
+        setTeamStatus('Staff account created.');
+      }
+      setStaffEditor(null);
+    } catch (err) {
+      console.error('Failed to save staff account', err);
+      setTeamStatus('Failed to save staff account. Verify callable functions are deployed.');
+    } finally {
+      setIsSavingStaff(false);
+    }
+  }
+
+  async function removeStaffAccount(uid: string) {
+    setTeamStatus('');
+    try {
+      await deleteAdminUser(uid);
+      await logAudit('delete_admin_user', 'guestSession', uid);
+      setTeamStatus('Staff account removed.');
+    } catch (err) {
+      console.error('Failed to delete staff account', err);
+      setTeamStatus('Failed to remove staff account. Verify callable functions are deployed.');
+    }
+  }
+
+  async function resetStaffPassword(uid: string, nextPassword: string) {
+    setPasswordResetUid(uid);
+    setTeamStatus('');
+    try {
+      await updateAdminPassword({ uid, newPassword: nextPassword });
+      await logAudit('reset_admin_password', 'guestSession', uid);
+      setTeamStatus('Password updated.');
+      setStaffEditor(null);
+    } catch (err) {
+      console.error('Failed to update password', err);
+      setTeamStatus('Failed to update password. Verify callable functions are deployed.');
+    } finally {
+      setPasswordResetUid(null);
     }
   }
 
@@ -1021,20 +1473,13 @@ export default function HouseApp() {
             </ul>
           </nav>
 
-          <div className="px-8 mt-auto space-y-3">
+          <div className="px-8 mt-auto">
             <button
               className="w-full py-3 px-4 rounded-[14px] border border-[#e2d8cb] bg-white/70 text-[#8d6214] font-['Manrope'] font-medium text-sm hover:bg-white transition-colors flex items-center justify-center gap-2"
               type="button"
             >
               <span className="material-symbols-outlined text-[18px]">support_agent</span>
               Support Concierge
-            </button>
-            <button
-              className="w-full py-3 px-4 rounded-[14px] border border-[#d1c5b4]/30 text-[#775a19] font-['Manrope'] font-medium text-sm hover:bg-[#faf7f0] transition-colors flex items-center justify-center gap-2"
-              onClick={handleLogout} type="button"
-            >
-              <span className="material-symbols-outlined text-[18px]">logout</span>
-              Sign Out
             </button>
           </div>
         </aside>
@@ -1048,16 +1493,18 @@ export default function HouseApp() {
               Atelier Meridian
             </div>
             <div className="flex items-center gap-3 md:gap-5">
-              <div className="relative hidden md:block">
-                <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[#4e4639] text-[18px]">search</span>
-                <input
-                  type="text"
-                  value={shellSearch}
-                  onChange={(e) => setShellSearch(e.target.value)}
-                  placeholder={TAB_SEARCH_PLACEHOLDERS[activeTab]}
-                  className="w-64 rounded-2xl bg-[#e9e8e6]/92 pl-10 pr-4 py-2.5 font-['Manrope'] text-sm text-[#1a1c1b] outline-none placeholder:text-[#6c6457] focus:bg-white focus:ring-1 focus:ring-[#d8c7ac]"
-                />
-              </div>
+              {activeTab === 'menu' || activeTab === 'settings' ? (
+                <div className="relative hidden md:block">
+                  <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[#4e4639] text-[18px]">search</span>
+                  <input
+                    type="text"
+                    value={shellSearch}
+                    onChange={(e) => setShellSearch(e.target.value)}
+                    placeholder={TAB_SEARCH_PLACEHOLDERS[activeTab]}
+                    className="w-64 rounded-2xl bg-[#e9e8e6]/92 pl-10 pr-4 py-2.5 font-['Manrope'] text-sm text-[#1a1c1b] outline-none placeholder:text-[#6c6457] focus:bg-white focus:ring-1 focus:ring-[#d8c7ac]"
+                  />
+                </div>
+              ) : null}
               {slaBreachedCount > 0 ? (
                 <div className="hidden md:flex items-center gap-1.5 text-[#ba1a1a]">
                   <span className="material-symbols-outlined text-[20px]">warning</span>
@@ -1120,10 +1567,18 @@ export default function HouseApp() {
             ══════════════════════════════════════════ */}
             {activeTab === 'orders' ? (
               <div>
-                <div className="flex justify-between items-end mb-10">
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6 mb-12">
                   <div>
                     <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight font-semibold">Live Orders</h2>
                     <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm tracking-wide">Currently monitoring active in-room dining requests.</p>
+                  </div>
+                  <div className="flex gap-3">
+                    <button className="rounded-full bg-[#efe8dc] px-6 py-2.5 font-['Manrope'] text-sm font-semibold text-[#775a19] transition hover:bg-[#e4d6be]" type="button">
+                      Filter
+                    </button>
+                    <button className="rounded-[14px] bg-[#775a19] px-5 py-2.5 font-['Manrope'] text-sm font-semibold text-white shadow-[0_8px_16px_rgba(119,90,25,0.15)] transition hover:bg-[#5d4201]" type="button">
+                      Pause New Orders
+                    </button>
                   </div>
                 </div>
 
@@ -1134,8 +1589,8 @@ export default function HouseApp() {
                     <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{activeOrders.length}</p>
                   </div>
                   <div className={`${ELEVATED_PANEL_CLASS} p-6`}>
-                    <p className="font-['Manrope'] text-xs tracking-widest text-[#5f5e5e] uppercase mb-1">Incoming Unread</p>
-                    <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{unreadIncomingOrders.length}</p>
+                    <p className="font-['Manrope'] text-xs tracking-widest text-[#5f5e5e] uppercase mb-1">Avg. Prep Time</p>
+                    <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{averagePrepMinutes} <span className="font-['Manrope'] text-lg text-[#5f5e5e]">min</span></p>
                   </div>
                   <div className={`${TONAL_PANEL_CLASS} p-6`}>
                     <p className="font-['Manrope'] text-xs tracking-widest text-[#5f5e5e] uppercase mb-1">Delayed</p>
@@ -1143,16 +1598,16 @@ export default function HouseApp() {
                   </div>
                 </div>
 
-                {/* Order cards */}
-                {orders.length === 0 ? (
+                {visibleOrders.length === 0 ? (
                   <div className={`${ELEVATED_PANEL_CLASS} p-12 text-center`}>
                     <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">restaurant</span>
-                    <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No orders yet. Waiting for guest activity.</p>
+                    <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No active orders match the current queue.</p>
                   </div>
                 ) : (
                   <div className="space-y-6">
-                    {orders.map((order) => {
+                    {visibleOrders.map((order) => {
                       const sla = isOrderSlaBreached(order);
+                      const primaryAction = getOrderNextAction(order.status);
                       return (
                         <div
                           key={order.id}
@@ -1160,40 +1615,41 @@ export default function HouseApp() {
                             sla ? 'ring-[#e4bbb9] ring-2' : ''
                           }`}
                         >
-                          {/* Left panel */}
-                          <div className="p-6 md:w-[26%] bg-[#f4f3f1]/88 flex flex-col justify-between border-b md:border-b-0 md:border-r border-white/70">
+                          <div className={`w-full md:w-[6px] ${sla ? 'bg-[#ba1a1a]' : 'bg-[#efe8dc]'}`} />
+                          <div className="p-6 md:w-[24%] bg-[#f4f3f1]/88 flex flex-col justify-between">
                             <div>
-                              <span className={`inline-block px-2 py-1 text-xs font-['Manrope'] tracking-wide uppercase rounded-sm mb-3 ${
+                              <span className={`inline-block px-3 py-1 text-xs font-['Manrope'] tracking-wide uppercase rounded-sm mb-5 ${
                                 sla ? 'bg-[#ffdad6] text-[#93000a]' : STATUS_COLORS[order.status] || 'bg-[#e9e8e6] text-[#1a1c1b]'
                               }`}>
-                                {sla ? 'Delayed' : order.status.replaceAll('_', ' ')}
+                                {sla ? 'Delayed' : formatStatusLabel(order.status)}
                               </span>
-                              <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Room {order.roomNumber}</h3>
-                              <p className="font-['Manrope'] text-sm text-[#5f5e5e] mt-1">{order.lastName || '—'}</p>
+                              <h3 className="font-['Noto_Serif'] text-[2rem] leading-none text-[#1a1c1b]">Suite {order.roomNumber}</h3>
+                              <p className="font-['Manrope'] text-sm text-[#5f5e5e] mt-3">{order.lastName || 'Guest'}</p>
                             </div>
-                            <div className="mt-6">
+                            <div className="mt-10">
                               <p className="font-['Manrope'] text-[10px] text-[#5f5e5e] tracking-widest uppercase">Ordered</p>
-                              <p className="font-['Manrope'] font-medium text-[#1a1c1b] text-sm mt-0.5">
-                                {order.createdAt ? order.createdAt.toLocaleString() : 'Unknown time'}
+                              <p className="font-['Manrope'] font-medium text-[#1a1c1b] text-sm mt-1">
+                                {order.createdAt ? order.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Unknown'}
+                                {' '}
+                                ({formatRelativeTime(order.createdAt)})
                               </p>
                             </div>
                           </div>
 
-                          {/* Right panel */}
                           <div className="p-6 flex-1 flex flex-col justify-between">
-                            <ul className="space-y-3">
+                            <ul className="space-y-5">
                               {order.items.map((item) => (
-                                <li key={item.id} className="flex justify-between items-start">
+                                <li key={item.id} className="flex justify-between items-start gap-6">
                                   <div>
-                                    <p className="font-['Manrope'] font-medium text-[#1a1c1b]">{item.qty}× {item.name}</p>
-                                    {item.note ? <p className="font-['Manrope'] text-sm text-[#5f5e5e]">"{item.note}"</p> : null}
+                                    <p className="font-['Manrope'] text-[2rem] leading-none text-[#1a1c1b] md:text-[1.15rem]">{item.qty}x {item.name}</p>
+                                    {item.note ? <p className="font-['Manrope'] text-sm text-[#5f5e5e] mt-2">{item.note}</p> : null}
                                   </div>
                                   <span className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatIdr(item.qty * item.price)}</span>
                                 </li>
                               ))}
                             </ul>
-                            <div className="mt-6 flex flex-wrap justify-between items-center pt-4 border-t border-[#d1c5b4]/10 gap-3">
-                              <div className="flex items-center gap-3">
+                            <div className="mt-8 flex flex-wrap justify-between items-center gap-3 bg-[#fcfbf9] px-6 py-5">
+                              <div className="flex items-center gap-3 flex-wrap">
                                 {sla ? (
                                   <div className="flex items-center gap-1.5">
                                     <span className="material-symbols-outlined text-[#ba1a1a] text-[18px]">warning</span>
@@ -1207,16 +1663,22 @@ export default function HouseApp() {
                                   </>
                                 )}
                               </div>
-                              <div className="flex flex-wrap gap-2">
-                                <select
-                                  className="appearance-none rounded-[14px] bg-[#f4f3f1] px-3 py-2.5 font-['Manrope'] text-sm text-[#1a1c1b] outline-none cursor-pointer ring-1 ring-[#ebe3d8]"
-                                  value={order.status}
-                                  onChange={(e) => updateOrderStatus(order.id, e.target.value)}
+                              <div className="flex flex-wrap items-center gap-3 justify-end">
+                                <button
+                                  className="font-['Manrope'] text-sm text-[#775a19] px-3 py-2.5 rounded-[14px] hover:bg-[#f4f3f1] transition-colors"
+                                  type="button"
                                 >
-                                  {ORDER_STATUSES.map((s) => (
-                                    <option key={s} value={s}>{s.replaceAll('_', ' ')}</option>
-                                  ))}
-                                </select>
+                                  Message Guest
+                                </button>
+                                {primaryAction ? (
+                                  <button
+                                    className="rounded-[14px] bg-[#8b6418] px-5 py-2.5 font-['Manrope'] text-sm font-semibold text-white transition hover:bg-[#775a19]"
+                                    onClick={() => updateOrderStatus(order.id, primaryAction.nextStatus)}
+                                    type="button"
+                                  >
+                                    {primaryAction.label}
+                                  </button>
+                                ) : null}
                                 <button
                                   className="font-['Manrope'] text-sm font-medium bg-[#efeeec] text-[#1a1c1b] px-4 py-2.5 rounded-[14px] hover:bg-[#e9e8e6] transition-colors"
                                   onClick={() => markAsRead(order.id)} type="button"
@@ -1264,22 +1726,29 @@ export default function HouseApp() {
                   </button>
                 </div>
 
-                {/* Search */}
-                <div className="mb-10">
-                  <div className="relative w-80">
-                    <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[#4e4639] text-[20px]">search</span>
-                    <input
-                      className="w-full pl-10 pr-4 py-3 bg-[#e9e8e6]/92 border-none rounded-2xl text-sm font-['Manrope'] text-[#1a1c1b] outline-none placeholder:text-[#4e4639]/50 focus:bg-white focus:ring-1 focus:ring-[#d8c7ac]"
-                      placeholder="Search menu items…" value={menuSearch}
-                      onChange={(e) => setMenuSearch(e.target.value)}
-                    />
-                  </div>
+                <div className="mb-12 flex gap-8 overflow-x-auto border-b border-[#e9e8e6] pb-4">
+                  {menuCategories.map((category) => {
+                    const isActive = activeMenuCategory === category;
+                    return (
+                      <button
+                        key={category}
+                        type="button"
+                        onClick={() => setActiveMenuCategory(category)}
+                        className={`relative whitespace-nowrap font-['Manrope'] text-sm uppercase tracking-[0.1em] transition-colors ${
+                          isActive ? 'font-semibold text-[#775a19]' : 'text-[#4e4639] hover:text-[#775a19]'
+                        }`}
+                      >
+                        {category}
+                        {isActive ? <span className="absolute -bottom-4 left-0 h-[2px] w-full bg-[#775a19]" /> : null}
+                      </button>
+                    );
+                  })}
                 </div>
 
                 {/* Product grid */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-                  {filteredProducts.map((product) => (
-                    <article key={product.id} className={`group ${ELEVATED_PANEL_CLASS} overflow-hidden relative transition-transform duration-300 hover:-translate-y-1`}>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8">
+                  {visibleProducts.map((product) => (
+                    <article key={product.id} className={`group ${ELEVATED_PANEL_CLASS} overflow-hidden relative max-w-[22rem] transition-transform duration-300 hover:-translate-y-1`}>
                       <div className="h-56 overflow-hidden relative bg-[#e9e8e6]">
                         {product.image ? (
                           <img src={product.image} alt={product.name} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
@@ -1289,7 +1758,7 @@ export default function HouseApp() {
                           </div>
                         )}
                         <div className="absolute inset-0 bg-gradient-to-t from-white/90 via-white/20 to-transparent" />
-                        <div className="absolute top-4 left-4 bg-white/80 backdrop-blur-md px-3 py-1 rounded-full flex items-center gap-2">
+                        <div className="absolute top-4 left-4 bg-white/85 backdrop-blur-md px-3 py-1 rounded-full flex items-center gap-2">
                           <div className={`w-2 h-2 rounded-full ${product.isAvailable ? 'bg-[#4caf50]' : 'bg-[#ba1a1a]'}`} />
                           <span className="font-['Manrope'] text-xs uppercase tracking-wider text-[#1a1c1b] font-semibold">
                             {product.isAvailable ? 'Available' : 'Offline'}
@@ -1297,13 +1766,13 @@ export default function HouseApp() {
                         </div>
                       </div>
                       <div className="p-5 relative -mt-8">
-                        <div className="flex justify-between items-start mb-2">
-                          <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b] leading-tight w-3/4">{product.name}</h3>
+                        <div className="flex justify-between items-start gap-4 mb-2">
+                          <h3 className="font-['Noto_Serif'] text-[2rem] leading-[1.05] text-[#1a1c1b]">{product.name}</h3>
                           <span className="font-['Noto_Serif'] text-lg text-[#775a19]">{formatIdr(product.price)}</span>
                         </div>
                         <p className="font-['Manrope'] text-sm text-[#4e4639] mb-2 line-clamp-2">{product.description}</p>
                         <p className="font-['Manrope'] text-xs text-[#4e4639]/70 uppercase tracking-widest">{product.category}</p>
-                        <div className="flex justify-between items-center pt-4 mt-4 border-t border-[#f4f3f1]">
+                        <div className="flex justify-between items-center pt-6 mt-6 border-t border-[#f4f3f1]">
                           <div className="flex gap-1">
                             <button
                               className="text-[#775a19] hover:text-[#4e3700] transition-colors p-2 rounded-full hover:bg-[#f4f3f1]"
@@ -1311,26 +1780,28 @@ export default function HouseApp() {
                             >
                               <span className="material-symbols-outlined text-[20px]">edit</span>
                             </button>
+                          </div>
+                          <div className="flex items-center gap-3">
                             <button
                               className="text-[#ba1a1a] hover:text-[#93000a] transition-colors p-2 rounded-full hover:bg-[#ffdad6]"
                               onClick={() => deleteProduct(product.id)} type="button"
                             >
                               <span className="material-symbols-outlined text-[20px]">delete</span>
                             </button>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                              <input
+                                type="checkbox" className="sr-only peer"
+                                checked={product.isAvailable}
+                                onChange={() => toggleProductAvailability(product)}
+                              />
+                              <div className="w-11 h-6 bg-[#e9e8e6] rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:border-[#e9e8e6] after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#775a19]" />
+                            </label>
                           </div>
-                          <label className="relative inline-flex items-center cursor-pointer">
-                            <input
-                              type="checkbox" className="sr-only peer"
-                              checked={product.isAvailable}
-                              onChange={() => toggleProductAvailability(product)}
-                            />
-                            <div className="w-11 h-6 bg-[#e9e8e6] rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:border-[#e9e8e6] after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#775a19]" />
-                          </label>
                         </div>
                       </div>
                     </article>
                   ))}
-                  {filteredProducts.length === 0 ? (
+                  {visibleProducts.length === 0 ? (
                     <div className={`col-span-full ${ELEVATED_PANEL_CLASS} p-12 text-center`}>
                       <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">menu_book</span>
                       <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No items match your search.</p>
@@ -1366,74 +1837,220 @@ export default function HouseApp() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {feedbackOrders.length === 0 ? (
-                    <div className={`col-span-full ${ELEVATED_PANEL_CLASS} p-12 text-center`}>
-                      <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">reviews</span>
-                      <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No guest feedback yet.</p>
-                    </div>
-                  ) : feedbackOrders.map((order, i) => {
-                    const isFeatured = i === 0;
-                    const isActionRequired = order.managerFollowUpRequested || (order.rating !== null && order.rating <= 3);
-                    return (
-                      <div
-                        key={`feedback-${order.id}`}
-                        className={`${ELEVATED_PANEL_CLASS} p-7 relative flex flex-col ${
-                          isFeatured ? 'lg:col-span-2' : ''
-                        } ${isActionRequired ? 'ring-[#e4bbb9] ring-2' : ''}`}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 mb-12 items-center">
+                  <div className="lg:col-span-4 relative">
+                    <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-[#4e4639]">search</span>
+                    <input
+                      type="text"
+                      value={feedbackSearch}
+                      onChange={(e) => setFeedbackSearch(e.target.value)}
+                      placeholder="Search suite, keyword, or guest..."
+                      className="w-full rounded-[14px] bg-[#e9e8e6] py-4 pl-12 pr-4 font-['Manrope'] text-sm text-[#1a1c1b] outline-none transition focus:bg-white focus:shadow-[0_4px_20px_rgba(26,28,27,0.04)]"
+                    />
+                  </div>
+                  <div className="lg:col-span-8 flex flex-wrap gap-3 justify-start lg:justify-end">
+                    {[
+                      { id: 'all' as const, label: 'All Ratings' },
+                      { id: '5' as const, label: '5 Stars' },
+                      { id: '4' as const, label: '4 Stars' },
+                      { id: 'week' as const, label: 'This Week' },
+                    ].map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => setFeedbackFilter(option.id)}
+                        className={`rounded-full border px-5 py-3 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] transition ${
+                          feedbackFilter === option.id
+                            ? 'border-[#775a19] bg-white text-[#775a19]'
+                            : 'border-[#d1c5b4]/40 bg-white text-[#4e4639] hover:bg-[#f4f3f1]'
+                        }`}
                       >
-                        <div className="flex justify-between items-start mb-5">
-                          <div>
-                            {order.rating !== null ? (
-                              <div className="flex items-center gap-0.5 mb-2">
-                                {[1,2,3,4,5].map((star) => (
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {filteredFeedbackOrders.length === 0 ? (
+                  <div className={`${ELEVATED_PANEL_CLASS} p-12 text-center`}>
+                    <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">reviews</span>
+                    <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No guest feedback yet.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-8">
+                    <div className="grid grid-cols-1 xl:grid-cols-[1.45fr_0.7fr] gap-8">
+                      {feedbackHeroOrder ? (
+                        <article className={`${ELEVATED_PANEL_CLASS} p-10`}>
+                          <div className="flex items-start justify-between gap-5">
+                            <div>
+                              <div className="mb-5 flex items-center gap-1">
+                                {[1, 2, 3, 4, 5].map((star) => (
                                   <span
                                     key={star}
-                                    className="material-symbols-outlined text-xl"
+                                    className="material-symbols-outlined text-[28px]"
                                     style={{
                                       fontVariationSettings: "'FILL' 1",
-                                      color: order.rating !== null && star <= order.rating
-                                        ? (order.rating <= 3 ? '#ba1a1a' : '#775a19')
-                                        : '#d1c5b4',
+                                      color: star <= (feedbackHeroOrder.rating || 0) ? '#8b6418' : '#d8d1c6',
                                     }}
-                                  >star</span>
+                                  >
+                                    star
+                                  </span>
                                 ))}
                               </div>
-                            ) : null}
-                            <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">
-                              {isActionRequired ? 'Needs Follow-up' : 'Guest Review'}
-                            </h3>
+                              <h3 className="font-['Noto_Serif'] text-[2.6rem] leading-[1.02] text-[#1a1c1b]">
+                                {feedbackHeroOrder.feedbackSummary || 'Exceptional dining service'}
+                              </h3>
+                            </div>
+                            <span className="bg-[#f4f3f1] px-4 py-2 text-xs uppercase tracking-[0.2em] text-[#4e4639]">
+                              Suite {feedbackHeroOrder.roomNumber}
+                            </span>
                           </div>
-                          <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639] bg-[#f4f3f1] px-3 py-1 rounded">
-                            Room {order.roomNumber}
-                          </span>
-                        </div>
-                        <p className="font-['Manrope'] text-[#4e4639] leading-relaxed text-sm mb-6 flex-grow">
-                          "{order.feedbackText || order.feedbackSummary || 'Guest submitted a rating without written comments.'}"
-                        </p>
-                        <div className="flex justify-between items-end border-t border-[#f4f3f1] pt-4 mt-auto">
-                          <div>
-                            {isActionRequired ? (
-                              <p className="font-['Manrope'] text-xs text-[#ba1a1a] font-medium">Action Required</p>
-                            ) : null}
-                            <p className="font-['Manrope'] text-xs text-[#4e4639]">
-                              {order.createdAt ? order.createdAt.toLocaleString() : '—'}
-                            </p>
-                          </div>
-                          {isActionRequired ? (
-                            <button className="text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest hover:bg-[#ffdad6] px-2 py-1 rounded transition-colors">
-                              Resolve
-                            </button>
-                          ) : (
-                            <button className="text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest hover:text-[#4e3700] transition-colors">
+                          <p className="mt-8 max-w-4xl font-['Manrope'] text-[1.05rem] leading-9 text-[#4e4639]">
+                            "{feedbackHeroOrder.feedbackText || feedbackHeroOrder.feedbackSummary || 'Guest submitted a rating without written comments.'}"
+                          </p>
+                          <div className="mt-10 flex items-end justify-between gap-6 border-t border-[#f4f3f1] pt-7">
+                            <div className="flex items-center gap-4">
+                              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#1a1c1b] text-white">
+                                {feedbackHeroOrder.lastName?.slice(0, 1) || 'G'}
+                              </div>
+                              <div>
+                                <p className="font-['Manrope'] text-base text-[#1a1c1b]">{feedbackHeroOrder.lastName || 'Guest'}</p>
+                                <p className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatFeedbackTime(feedbackHeroOrder.createdAt)}</p>
+                              </div>
+                            </div>
+                            <button className="font-['Manrope'] text-sm uppercase tracking-[0.14em] text-[#8b6418]" type="button">
                               Acknowledge
                             </button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                          </div>
+                        </article>
+                      ) : null}
+
+                      {feedbackSideOrder ? (
+                        <article className={`${ELEVATED_PANEL_CLASS} p-8`}>
+                          <div className="flex items-start justify-between gap-4">
+                            <div className="mb-4 flex items-center gap-1">
+                              {[1, 2, 3, 4, 5].map((star) => (
+                                <span
+                                  key={star}
+                                  className="material-symbols-outlined text-[24px]"
+                                  style={{
+                                    fontVariationSettings: "'FILL' 1",
+                                    color: star <= (feedbackSideOrder.rating || 0) ? '#8b6418' : '#d8d1c6',
+                                  }}
+                                >
+                                  star
+                                </span>
+                              ))}
+                            </div>
+                            <span className="text-sm uppercase tracking-[0.18em] text-[#4e4639]">Suite {feedbackSideOrder.roomNumber}</span>
+                          </div>
+                          <h3 className="font-['Noto_Serif'] text-[2rem] leading-tight text-[#1a1c1b]">
+                            {feedbackSideOrder.feedbackSummary || 'Lovely, with minor notes'}
+                          </h3>
+                          <p className="mt-6 font-['Manrope'] text-base leading-8 text-[#4e4639]">
+                            "{feedbackSideOrder.feedbackText || feedbackSideOrder.feedbackSummary || 'Guest shared a concise dining impression.'}"
+                          </p>
+                          <div className="mt-12 flex items-end justify-between gap-4 border-t border-[#f4f3f1] pt-6">
+                            <p className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatFeedbackTime(feedbackSideOrder.createdAt)}</p>
+                            <button className="font-['Manrope'] text-sm uppercase tracking-[0.14em] text-[#8b6418]" type="button">
+                              Reply
+                            </button>
+                          </div>
+                        </article>
+                      ) : null}
+                    </div>
+
+                    <div className="grid grid-cols-1 xl:grid-cols-[0.7fr_1.3fr] gap-8">
+                      {feedbackIssueOrder ? (
+                        <article className={`${ELEVATED_PANEL_CLASS} relative overflow-hidden p-8`}>
+                          <div className="absolute inset-y-0 left-0 w-[4px] bg-[#e4bbb9]" />
+                          <div className="ml-3">
+                            <div className="flex items-start justify-between gap-4">
+                              <div className="mb-4 flex items-center gap-1">
+                                {[1, 2, 3, 4, 5].map((star) => (
+                                  <span
+                                    key={star}
+                                    className="material-symbols-outlined text-[24px]"
+                                    style={{
+                                      fontVariationSettings: "'FILL' 1",
+                                      color: star <= (feedbackIssueOrder.rating || 0) ? '#ba1a1a' : '#d8d1c6',
+                                    }}
+                                  >
+                                    star
+                                  </span>
+                                ))}
+                              </div>
+                              <span className="text-sm uppercase tracking-[0.18em] text-[#4e4639]">Suite {feedbackIssueOrder.roomNumber}</span>
+                            </div>
+                            <h3 className="font-['Noto_Serif'] text-[2rem] leading-tight text-[#1a1c1b]">
+                              {feedbackIssueOrder.feedbackSummary || 'Delayed service'}
+                            </h3>
+                            <p className="mt-6 font-['Manrope'] text-base leading-8 text-[#4e4639]">
+                              "{feedbackIssueOrder.feedbackText || 'Action required on this guest experience.'}"
+                            </p>
+                            <div className="mt-10 flex items-end justify-between gap-4 border-t border-[#f4f3f1] pt-6">
+                              <div>
+                                <p className="font-['Manrope'] text-sm text-[#ba1a1a]">Action Required</p>
+                                <p className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatFeedbackTime(feedbackIssueOrder.createdAt)}</p>
+                              </div>
+                              <button className="font-['Manrope'] text-sm uppercase tracking-[0.14em] text-[#ba1a1a]" type="button">
+                                Resolve
+                              </button>
+                            </div>
+                          </div>
+                        </article>
+                      ) : null}
+
+                      {feedbackStoryOrder ? (
+                        <article className={`${ELEVATED_PANEL_CLASS} p-8`}>
+                          <div className="grid gap-6 lg:grid-cols-[1fr_0.72fr]">
+                            <div>
+                              <div className="mb-4 flex items-center gap-1">
+                                {[1, 2, 3, 4, 5].map((star) => (
+                                  <span
+                                    key={star}
+                                    className="material-symbols-outlined text-[24px]"
+                                    style={{
+                                      fontVariationSettings: "'FILL' 1",
+                                      color: star <= (feedbackStoryOrder.rating || 0) ? '#8b6418' : '#d8d1c6',
+                                    }}
+                                  >
+                                    star
+                                  </span>
+                                ))}
+                              </div>
+                              <div className="mb-5 flex items-center justify-between gap-4">
+                                <h3 className="font-['Noto_Serif'] text-[2rem] leading-tight text-[#1a1c1b]">
+                                  {feedbackStoryOrder.feedbackSummary || 'A perfect late night supper'}
+                                </h3>
+                                <span className="bg-[#f4f3f1] px-4 py-2 text-xs uppercase tracking-[0.2em] text-[#4e4639]">
+                                  Suite {feedbackStoryOrder.roomNumber}
+                                </span>
+                              </div>
+                              <p className="font-['Manrope'] text-base leading-8 text-[#4e4639]">
+                                "{feedbackStoryOrder.feedbackText || feedbackStoryOrder.feedbackSummary || 'Guest shared a memorable meal recap.'}"
+                              </p>
+                            </div>
+                            <div className="border-t border-[#f4f3f1] pt-6 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0">
+                              <p className="font-['Manrope'] text-sm font-semibold text-[#1a1c1b]">Ordered Items</p>
+                              <ul className="mt-4 space-y-2 font-['Manrope'] text-sm leading-7 text-[#4e4639]">
+                                {feedbackStoryOrder.items.slice(0, 4).map((item) => (
+                                  <li key={item.id}>- {item.name}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          </div>
+                          <div className="mt-8 flex items-end justify-between gap-4 border-t border-[#f4f3f1] pt-6">
+                            <p className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatFeedbackTime(feedbackStoryOrder.createdAt)}</p>
+                            <button className="font-['Manrope'] text-sm uppercase tracking-[0.14em] text-[#8b6418]" type="button">
+                              Acknowledge
+                            </button>
+                          </div>
+                        </article>
+                      ) : null}
+                    </div>
+                  </div>
+                )}
               </div>
             ) : null}
 
@@ -1443,10 +2060,20 @@ export default function HouseApp() {
             {activeTab === 'revenue' ? (
               <ManagerOnly role={identity.role}>
                 <div>
-                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-10">
-                    <div>
-                      <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight font-semibold">Revenue Analytics</h2>
-                      <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm">Daily and trend performance overview.</p>
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-12">
+                    <div className="flex gap-2 rounded-full border border-[#e3ddd3] bg-[#f4f3f1] p-1">
+                      {(['daily', 'weekly', 'monthly'] as const).map((range) => (
+                        <button
+                          key={range}
+                          type="button"
+                          onClick={() => setRevenueRange(range)}
+                          className={`rounded-full px-6 py-2 font-['Manrope'] text-sm transition ${
+                            revenueRange === range ? 'bg-white text-[#775a19] shadow-sm' : 'text-[#5f5e5e]'
+                          }`}
+                        >
+                          {range[0].toUpperCase() + range.slice(1)}
+                        </button>
+                      ))}
                     </div>
                     <div className="flex gap-3">
                       <input
@@ -1469,65 +2096,166 @@ export default function HouseApp() {
                     <div className={`${ELEVATED_PANEL_CLASS} p-8 relative overflow-hidden group`}>
                       <div className="absolute -right-8 -top-8 w-32 h-32 bg-[#c5a059]/10 rounded-full blur-2xl group-hover:bg-[#c5a059]/20 transition-all" />
                       <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Total Revenue</p>
-                      <h3 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] mb-4 tracking-tight">{formatIdr(revenueSummary.kpi.revenue)}</h3>
+                      <h3 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] mb-4 tracking-tight">{formatIdr(revenueOverview.revenue)}</h3>
                       <div className="flex items-center gap-2 text-sm">
-                        <span className="material-symbols-outlined text-[#775a19] text-sm">trending_up</span>
-                        <span className="font-['Manrope'] text-xs text-[#5f5e5e]">Selected date</span>
+                        <span className={`material-symbols-outlined text-sm ${revenueOverview.revenueDelta >= 0 ? 'text-[#775a19]' : 'text-[#ba1a1a]'}`}>
+                          {revenueOverview.revenueDelta >= 0 ? 'trending_up' : 'trending_down'}
+                        </span>
+                        <span className="font-['Manrope'] text-xs text-[#5f5e5e]">
+                          {`${revenueOverview.revenueDelta >= 0 ? '+' : ''}${revenueOverview.revenueDelta.toFixed(1)}% vs last period`}
+                        </span>
                       </div>
                     </div>
                     <div className={`${TONAL_PANEL_CLASS} p-8 relative overflow-hidden`}>
-                      <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Completed Orders</p>
-                      <h3 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] mb-4 tracking-tight">{revenueSummary.kpi.completedOrders}</h3>
+                      <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Average Order Value</p>
+                      <h3 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] mb-4 tracking-tight">{formatIdr(revenueOverview.averageOrderValue)}</h3>
                       <div className="flex items-center gap-2 text-sm">
-                        <span className="material-symbols-outlined text-[#775a19] text-sm">check_circle</span>
-                        <span className="font-['Manrope'] text-xs text-[#5f5e5e]">Fulfilled</span>
+                        <span className={`material-symbols-outlined text-sm ${revenueOverview.averageDelta >= 0 ? 'text-[#775a19]' : 'text-[#ba1a1a]'}`}>
+                          {revenueOverview.averageDelta >= 0 ? 'trending_up' : 'trending_down'}
+                        </span>
+                        <span className="font-['Manrope'] text-xs text-[#5f5e5e]">
+                          {`${revenueOverview.averageDelta >= 0 ? '+' : ''}${revenueOverview.averageDelta.toFixed(1)}% vs last period`}
+                        </span>
                       </div>
                     </div>
                     <div className={`${TONAL_PANEL_CLASS} p-8 relative overflow-hidden`}>
-                      <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Cancelled Orders</p>
-                      <h3 className="font-['Noto_Serif'] text-4xl text-[#ba1a1a] mb-4 tracking-tight">{revenueSummary.kpi.cancelledOrders}</h3>
+                      <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Total Orders</p>
+                      <h3 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] mb-4 tracking-tight">{revenueOverview.totalOrders}</h3>
                       <div className="flex items-center gap-2 text-sm">
-                        <span className="material-symbols-outlined text-[#ba1a1a] text-sm">cancel</span>
-                        <span className="font-['Manrope'] text-xs text-[#5f5e5e]">Cancelled</span>
+                        <span className={`material-symbols-outlined text-sm ${revenueOverview.ordersDelta >= 0 ? 'text-[#775a19]' : 'text-[#ba1a1a]'}`}>
+                          {revenueOverview.ordersDelta >= 0 ? 'trending_up' : 'trending_down'}
+                        </span>
+                        <span className="font-['Manrope'] text-xs text-[#5f5e5e]">
+                          {`${revenueOverview.ordersDelta >= 0 ? '+' : ''}${revenueOverview.ordersDelta.toFixed(1)}% vs last period`}
+                        </span>
                       </div>
                     </div>
                   </div>
 
-                  {/* Revenue rows */}
-                  <div className={`${ELEVATED_PANEL_CLASS} p-8 mb-8`}>
-                    <div className="flex justify-between items-center mb-6 border-b border-[#f4f3f1] pb-4">
-                      <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Top Performing Orders</h3>
-                      <span className="font-['Manrope'] text-xs text-[#5f5e5e]">{revenueSummary.rows.length} entries</span>
+                  <div className={`${ELEVATED_PANEL_CLASS} p-8 mb-10`}>
+                    <div className="mb-8 flex items-center justify-between gap-4">
+                      <h3 className="font-['Noto_Serif'] text-[2.1rem] text-[#1a1c1b]">Revenue Trend</h3>
+                      <button className="text-[#5f5e5e]" type="button">
+                        <span className="material-symbols-outlined">more_horiz</span>
+                      </button>
                     </div>
-                    <div className="flex flex-col gap-3">
-                      {revenueSummary.rows.map((row) => (
-                        <div key={row.id} className="flex items-center justify-between p-4 bg-[#f4f3f1] rounded-[18px] hover:bg-[#efeeec] transition-colors group cursor-pointer">
-                          <div className="flex items-center gap-4">
-                            <div className="w-12 h-12 rounded overflow-hidden bg-[#e9e8e6] flex items-center justify-center">
-                              <span className="material-symbols-outlined text-[#d1c5b4] text-[24px]">receipt</span>
+                    <div className="grid grid-cols-[auto_1fr] gap-6">
+                      <div className="hidden h-[280px] flex-col justify-between py-4 text-xs text-[#7c7366] sm:flex">
+                        {[1, 0.8, 0.6, 0.4, 0.2].map((step) => (
+                          <span key={step}>{formatCompactCurrency(Math.max(...revenueTrend.map((point) => point.value), 0) * step)}</span>
+                        ))}
+                      </div>
+                      <div>
+                        <div className="relative h-[280px] w-full overflow-hidden rounded-[18px] bg-[#fffdf9]">
+                          <svg viewBox="0 0 720 280" preserveAspectRatio="none" className="h-full w-full">
+                            {[40, 90, 140, 190, 240].map((y) => (
+                              <line key={y} x1="0" y1={y} x2="720" y2={y} stroke="#f1ece4" strokeWidth="1" />
+                            ))}
+                            {(() => {
+                              const maxValue = Math.max(...revenueTrend.map((point) => point.value), 1);
+                              const coordinates = revenueTrend.map((point, index) => {
+                                const x = revenueTrend.length === 1 ? 360 : (index * (720 / (revenueTrend.length - 1)));
+                                const y = 240 - ((point.value / maxValue) * 180);
+                                return { x, y, value: point.value };
+                              });
+                              const linePath = coordinates.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
+                              const areaPath = `${linePath} L 720 240 L 0 240 Z`;
+                              return (
+                                <>
+                                  <path d={areaPath} fill="url(#revenueArea)" opacity="0.22" />
+                                  <path d={linePath} fill="none" stroke="#8b6418" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+                                  {coordinates.map((point) => (
+                                    <circle key={`${point.x}-${point.y}`} cx={point.x} cy={point.y} r="6" fill="#ffffff" stroke="#8b6418" strokeWidth="3" />
+                                  ))}
+                                  <defs>
+                                    <linearGradient id="revenueArea" x1="0" y1="0" x2="0" y2="1">
+                                      <stop offset="0%" stopColor="#c5a059" />
+                                      <stop offset="100%" stopColor="#ffffff" />
+                                    </linearGradient>
+                                  </defs>
+                                </>
+                              );
+                            })()}
+                          </svg>
+                        </div>
+                        <div
+                          className="mt-4 grid gap-3"
+                          style={{ gridTemplateColumns: `repeat(${revenueTrend.length}, minmax(0, 1fr))` }}
+                        >
+                          {revenueTrend.map((point) => (
+                            <div key={point.label} className="text-center">
+                              <p className="font-['Manrope'] text-xs uppercase tracking-[0.16em] text-[#7c7366]">{point.label}</p>
                             </div>
-                            <div>
-                              <p className="font-['Manrope'] font-medium text-[#1a1c1b] text-sm">Room {row.roomNumber}</p>
-                              <p className="font-['Manrope'] text-xs text-[#5f5e5e]">{row.paymentMethod} · Order {row.id.slice(0, 8)}…</p>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 xl:grid-cols-[1fr_0.92fr] gap-12">
+                    <div>
+                      <h3 className="mb-6 border-b border-[#ece5db] pb-4 font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Top Performing Signatures</h3>
+                      <div className="space-y-6">
+                        {revenueLeaders.map((item) => (
+                          <div key={item.name} className={`${ELEVATED_PANEL_CLASS} flex items-center justify-between p-5`}>
+                            <div className="flex items-center gap-4">
+                              <div className="h-[72px] w-[72px] overflow-hidden rounded-[10px] bg-[#e9e8e6]">
+                                {item.image ? (
+                                  <img src={item.image} alt={item.name} className="h-full w-full object-cover" />
+                                ) : (
+                                  <div className="flex h-full w-full items-center justify-center">
+                                    <span className="material-symbols-outlined text-[#d1c5b4]">restaurant</span>
+                                  </div>
+                                )}
+                              </div>
+                              <div>
+                                <p className="font-['Manrope'] text-xl text-[#1a1c1b]">{item.name}</p>
+                              <p className="mt-1 font-['Manrope'] text-sm text-[#5f5e5e]">{item.orders} Orders</p>
                             </div>
                           </div>
-                          <p className="font-['Noto_Serif'] text-lg text-[#775a19]">{formatIdr(row.total)}</p>
+                          <div className="text-right">
+                            <p className="font-['Noto_Serif'] text-2xl text-[#775a19]">{formatIdr(item.revenue)}</p>
+                            <p className="mt-1 font-['Manrope'] text-sm text-[#5f5e5e]">
+                                {revenueOverview.revenue ? `${((item.revenue / revenueOverview.revenue) * 100).toFixed(1)}% of rev` : '0% of rev'}
+                            </p>
+                          </div>
                         </div>
-                      ))}
-                      {revenueSummary.rows.length === 0 ? (
-                        <div className="rounded-lg p-8 text-center">
-                          <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">payments</span>
-                          <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No completed revenue rows for the selected date.</p>
-                        </div>
-                      ) : null}
+                        ))}
+                        {revenueLeaders.length === 0 ? <p className="text-sm text-[#4e4639]">No signature data available yet.</p> : null}
+                      </div>
                     </div>
-                  </div>
 
-                  <div className={`${TONAL_PANEL_CLASS} p-6`}>
-                    <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Insight</p>
-                    <p className="font-['Manrope'] text-sm text-[#4e4639] leading-relaxed">
-                      Review completed orders by date to track revenue trends and identify peak service windows. Export to Excel for deeper analysis in Numbers or Excel.
-                    </p>
+                    <div className="space-y-6">
+                      <div>
+                        <h3 className="mb-6 border-b border-[#ece5db] pb-4 font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Revenue Distribution</h3>
+                        <div className="space-y-8">
+                          {revenueDistribution.map((segment, index) => (
+                            <div key={segment.label}>
+                              <div className="mb-2 flex items-center justify-between gap-4">
+                                <span className="font-['Manrope'] text-lg text-[#1a1c1b]">{segment.label}</span>
+                                <span className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">{formatIdr(segment.revenue)}</span>
+                              </div>
+                              <div className="h-3 rounded-full bg-[#ece8e1]">
+                                <div
+                                  className={`h-3 rounded-full ${index === 0 ? 'bg-[#8b6418]' : index === 1 ? 'bg-[#c5a059]' : 'bg-[#d7c49b]'}`}
+                                  style={{ width: `${Math.max(segment.percent, 8)}%` }}
+                                />
+                              </div>
+                            </div>
+                          ))}
+                          {revenueDistribution.length === 0 ? <p className="text-sm text-[#4e4639]">No revenue distribution data available yet.</p> : null}
+                        </div>
+                      </div>
+
+                      <div className={`${TONAL_PANEL_CLASS} p-6`}>
+                        <p className="mb-3 font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e]">Insight</p>
+                        <p className="font-['Manrope'] text-sm leading-7 text-[#4e4639]">
+                          {revenueDistribution[0]
+                            ? `${revenueDistribution[0].label} currently leads revenue contribution at ${revenueDistribution[0].percent}% of completed order value for the selected period.`
+                            : 'Review completed orders by date to track revenue trends and identify peak service windows.'}
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </ManagerOnly>
@@ -1631,83 +2359,191 @@ export default function HouseApp() {
             ══════════════════════════════════════════ */}
             {activeTab === 'settings' ? (
               <div>
-                <div className="mb-10">
-                  <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight">Settings</h2>
-                  <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm">Manage guest access, account details, and system configuration.</p>
+                <div className="mb-16 flex justify-between items-end gap-6">
+                  <div>
+                    <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight">General Settings</h2>
+                    <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm">Configure core operational parameters for in-room dining.</p>
+                  </div>
+                  <button className="rounded-[14px] bg-[#8b6418] px-6 py-3 font-['Manrope'] text-sm font-medium tracking-wide text-white shadow-[0_8px_16px_rgba(119,90,25,0.15)] transition hover:bg-[#775a19]" type="button">
+                    Save Changes
+                  </button>
                 </div>
-                <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
-                  {/* QR Access */}
-                  <div className={`${ELEVATED_PANEL_CLASS} p-8`}>
-                    <div className="flex items-center gap-3 mb-7">
-                      <span className="material-symbols-outlined text-[#775a19] text-[22px]">qr_code_2</span>
-                      <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Guest QR Access</h3>
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 mb-12">
+                  <section className={`lg:col-span-8 ${ELEVATED_PANEL_CLASS} p-8`}>
+                    <div className="mb-8 flex items-center gap-3 border-b border-[#f4f3f1] pb-4">
+                      <span className="material-symbols-outlined text-[#c5a059]" style={{ fontVariationSettings: "'FILL' 1" }}>schedule</span>
+                      <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Operating Hours</h3>
                     </div>
-                    <div className="grid gap-6 md:grid-cols-2">
-                      <div className="space-y-5">
-                        {[
-                          { label: 'Hotel ID', value: hotelId, onChange: setHotelId, placeholder: '' },
-                          { label: 'Stay ID', value: stayId, onChange: setStayId, placeholder: 'stay-1204-demo' },
-                          { label: 'Room Number', value: roomNumber, onChange: setRoomNumber, placeholder: '1204' },
-                          { label: 'Expiry (minutes)', value: expiresInMinutes, onChange: setExpiresInMinutes, placeholder: '720' },
-                        ].map((field) => (
-                          <div key={field.label}>
-                            <label className="block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-1">{field.label}</label>
-                            <input
-                              type="text" value={field.value} placeholder={field.placeholder}
-                              onChange={(e) => field.onChange(e.target.value)}
-                              className="w-full bg-[#e9e8e6] border-b-2 border-transparent focus:border-b-[#775a19] rounded-sm px-3 py-2.5 font-['Manrope'] text-sm text-[#1a1c1b] outline-none placeholder:text-[#4e4639]/50 transition-colors"
-                            />
+                    <div className="space-y-5">
+                      {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'].map((day) => (
+                        <div key={day} className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                          <div className="flex items-center gap-4 md:w-1/3">
+                            <input type="checkbox" defaultChecked className="h-5 w-5 accent-[#775a19]" />
+                            <span className="font-['Manrope'] text-lg text-[#1a1c1b]">{day}</span>
                           </div>
-                        ))}
-                        <div className="flex flex-wrap gap-3 pt-2">
-                          <button
-                            className="bg-[#1a1c1b] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#1a1c1b]/90 transition-colors disabled:opacity-50"
-                            disabled={isGeneratingToken} onClick={handleGenerateQr} type="button"
-                          >
-                            {isGeneratingToken ? 'Generating…' : 'Generate QR'}
-                          </button>
-                          {tokenResult?.qrUrl ? (
-                            <button
-                              className="flex items-center gap-2 border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#f4f3f1] transition-colors"
-                              onClick={copyTokenUrl} type="button"
-                            >
-                              <span className="material-symbols-outlined text-[16px]">content_copy</span>
-                              Copy URL
-                            </button>
-                          ) : null}
+                          <div className="flex items-center gap-4">
+                            <input type="time" defaultValue="06:00" className="rounded-[10px] bg-[#f4f3f1] px-4 py-3 text-sm text-[#1a1c1b] outline-none ring-1 ring-[#ebe3d8]" />
+                            <span className="text-sm text-[#5f5e5e]">to</span>
+                            <input type="time" defaultValue="23:30" className="rounded-[10px] bg-[#f4f3f1] px-4 py-3 text-sm text-[#1a1c1b] outline-none ring-1 ring-[#ebe3d8]" />
+                          </div>
                         </div>
-                        {tokenStatus ? <p className="font-['Manrope'] text-xs text-[#4e4639]">{tokenStatus}</p> : null}
+                      ))}
+                    </div>
+                  </section>
+                  <section className={`lg:col-span-4 ${TONAL_PANEL_CLASS} p-8`}>
+                    <div className="mb-8 flex items-center gap-3">
+                      <span className="material-symbols-outlined text-[#775a19]" style={{ fontVariationSettings: "'FILL' 1" }}>account_balance</span>
+                      <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Financials</h3>
+                    </div>
+                    <div className="space-y-8">
+                      <div>
+                        <label className="mb-3 block font-['Manrope'] text-xs uppercase tracking-[0.18em] text-[#5f5e5e]">Base Tax Rate (%)</label>
+                        <input type="number" defaultValue="8.5" className="w-full border-b border-[#775a19] bg-[#e9e8e6] px-4 py-3 text-2xl text-[#1a1c1b] outline-none" />
                       </div>
-                      <div className={`${TONAL_PANEL_CLASS} p-5`}>
-                        <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-4">Print Pack</p>
-                        {tokenResult ? (
-                          <div className="space-y-4 font-['Manrope'] text-sm">
-                            {[
-                              { label: 'Guest URL', value: tokenResult.qrUrl, mono: true },
-                              { label: 'Raw Token', value: tokenResult.rawToken, mono: true },
-                              { label: 'Expires At', value: new Date(tokenResult.expiresAt).toLocaleString(), mono: false },
-                            ].map((item) => (
-                              <div key={item.label}>
-                                <p className="font-['Manrope'] text-[10px] uppercase tracking-widest text-[#4e4639]">{item.label}</p>
-                                <p className={`mt-1.5 bg-white rounded px-3 py-2 text-xs text-[#1a1c1b] leading-5 break-all ${item.mono ? 'font-mono' : ''}`}>
-                                  {item.value}
-                                </p>
-                              </div>
-                            ))}
+                      <div>
+                        <label className="mb-3 block font-['Manrope'] text-xs uppercase tracking-[0.18em] text-[#5f5e5e]">In-Room Dining Surcharge (%)</label>
+                        <input type="number" defaultValue="18.0" className="w-full border-b border-[#775a19] bg-[#e9e8e6] px-4 py-3 text-2xl text-[#1a1c1b] outline-none" />
+                        <p className="mt-2 text-sm text-[#5f5e5e]">Automatically applied to subtotal before tax.</p>
+                      </div>
+                    </div>
+                  </section>
+                </div>
+
+                <section className={`${ELEVATED_PANEL_CLASS} mb-12 p-8`}>
+                  <div className="grid gap-8 lg:grid-cols-[0.9fr_1.1fr]">
+                    <div>
+                      <div className="mb-4 flex items-center gap-3">
+                        <span className="material-symbols-outlined text-[#c5a059]" style={{ fontVariationSettings: "'FILL' 1" }}>notifications_active</span>
+                        <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Alert Preferences</h3>
+                      </div>
+                      <p className="max-w-sm font-['Manrope'] text-lg leading-8 text-[#4e4639]">
+                        Manage how and when staff are notified of new orders, delays, or guest feedback.
+                      </p>
+                    </div>
+                    <div className="grid gap-5 md:grid-cols-2">
+                      {[
+                        ['New Order Chime', 'Audible alert on kitchen tablets.', true],
+                        ['VIP Guest Alert', 'SMS notification to duty manager.', true],
+                        ['Delayed Order Warning', 'Alerts after 30 mins prep time.', true],
+                        ['Daily Revenue Digest', 'Email sent at end of service.', false],
+                      ].map(([title, copy, checked]) => (
+                        <label key={title} className="flex items-start justify-between gap-4 rounded-[18px] bg-[#f4f3f1] p-4">
+                          <div>
+                            <p className="font-['Manrope'] text-lg font-medium text-[#1a1c1b]">{title}</p>
+                            <p className="mt-1 font-['Manrope'] text-sm text-[#5f5e5e]">{copy}</p>
                           </div>
-                        ) : (
-                          <p className="font-['Manrope'] text-sm leading-6 text-[#4e4639]">
-                            Generate a guest access link for the front-office print workflow.
-                          </p>
-                        )}
-                      </div>
+                          <input type="checkbox" defaultChecked={Boolean(checked)} className="mt-1 h-5 w-5 accent-[#775a19]" />
+                        </label>
+                      ))}
                     </div>
                   </div>
+                </section>
 
-                  {/* Right column */}
-                    <div className="space-y-5">
-                    <div className={`${ELEVATED_PANEL_CLASS} p-7`}>
-                      <div className="flex items-center gap-3 mb-5">
+                <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+                  <div className="space-y-6">
+                    <ManagerOnly role={identity.role}>
+                      <section className={`${ELEVATED_PANEL_CLASS} p-8`}>
+                        <div className="mb-6 flex items-center justify-between gap-4">
+                          <div>
+                            <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#5f5e5e]">Manager Controls</p>
+                            <h3 className="mt-2 font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Team Access</h3>
+                          </div>
+                          <button type="button" onClick={() => setStaffEditor(getStaffEditorState())} className="rounded-[14px] bg-[#775a19] px-5 py-3 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] text-white">
+                            Add Staff
+                          </button>
+                        </div>
+                        {teamStatus ? <p className="mb-4 text-sm text-[#775a19]">{teamStatus}</p> : null}
+                        <div className="space-y-4">
+                          {visibleStaffAccounts.map((staff) => (
+                            <div key={staff.uid} className="rounded-[18px] bg-[#f4f3f1] p-5">
+                              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                                <div>
+                                  <div className="flex items-center gap-3">
+                                    <h4 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">{staff.name}</h4>
+                                    <span className={`rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.16em] ${staff.active ? 'bg-[#e9c176]/30 text-[#5d4201]' : 'bg-[#ffdad6] text-[#93000a]'}`}>
+                                      {staff.active ? staff.role : 'inactive'}
+                                    </span>
+                                  </div>
+                                  <p className="mt-2 font-['Manrope'] text-sm text-[#4e4639]">{staff.username} · {staff.email || 'No email set'}</p>
+                                  <p className="mt-1 font-['Manrope'] text-xs text-[#5f5e5e]">
+                                    Last updated {staff.lastUpdatedAt ? staff.lastUpdatedAt.toLocaleString() : 'not recorded'}
+                                  </p>
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                  <button type="button" onClick={() => setStaffEditor(getStaffEditorState(staff))} className="rounded-[14px] border border-[#d1c5b4]/50 px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#4e4639]">
+                                    Edit
+                                  </button>
+                                  <button type="button" onClick={() => setStaffEditor({ ...getStaffEditorState(staff), password: '' })} className="rounded-[14px] border border-[#d1c5b4]/50 px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#775a19]">
+                                    Reset Pass
+                                  </button>
+                                  <button type="button" onClick={() => removeStaffAccount(staff.uid)} className="rounded-[14px] border border-[#ba1a1a]/20 px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[#ba1a1a]">
+                                    Remove
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                          {visibleStaffAccounts.length === 0 ? <p className="text-sm text-[#4e4639]">No staff accounts found.</p> : null}
+                        </div>
+                      </section>
+                    </ManagerOnly>
+
+                    <section className={`${ELEVATED_PANEL_CLASS} p-8`}>
+                      <div className="mb-7 flex items-center gap-3">
+                        <span className="material-symbols-outlined text-[#775a19] text-[22px]">qr_code_2</span>
+                        <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Guest QR Access</h3>
+                      </div>
+                      <div className="grid gap-6 md:grid-cols-2">
+                        <div className="space-y-5">
+                          {[
+                            { label: 'Hotel ID', value: hotelId, onChange: setHotelId, placeholder: '' },
+                            { label: 'Stay ID', value: stayId, onChange: setStayId, placeholder: 'stay-1204-demo' },
+                            { label: 'Room Number', value: roomNumber, onChange: setRoomNumber, placeholder: '1204' },
+                            { label: 'Expiry (minutes)', value: expiresInMinutes, onChange: setExpiresInMinutes, placeholder: '720' },
+                          ].map((field) => (
+                            <div key={field.label}>
+                              <label className="mb-2 block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">{field.label}</label>
+                              <input type="text" value={field.value} placeholder={field.placeholder} onChange={(e) => field.onChange(e.target.value)} className="w-full rounded-[14px] bg-[#e9e8e6] px-4 py-3 font-['Manrope'] text-sm text-[#1a1c1b] outline-none" />
+                            </div>
+                          ))}
+                          <div className="flex flex-wrap gap-3 pt-2">
+                            <button className="rounded-[14px] bg-[#1a1c1b] px-5 py-3 font-['Manrope'] text-xs uppercase tracking-widest text-white disabled:opacity-50" disabled={isGeneratingToken} onClick={handleGenerateQr} type="button">
+                              {isGeneratingToken ? 'Generating…' : 'Generate QR'}
+                            </button>
+                            {tokenResult?.qrUrl ? (
+                              <button className="rounded-[14px] border border-[#d1c5b4]/50 px-5 py-3 font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]" onClick={copyTokenUrl} type="button">
+                                Copy URL
+                              </button>
+                            ) : null}
+                          </div>
+                          {tokenStatus ? <p className="font-['Manrope'] text-xs text-[#4e4639]">{tokenStatus}</p> : null}
+                        </div>
+                        <div className={`${TONAL_PANEL_CLASS} p-5`}>
+                          <p className="mb-4 font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">Print Pack</p>
+                          {tokenResult ? (
+                            <div className="space-y-4 font-['Manrope'] text-sm">
+                              {[
+                                { label: 'Guest URL', value: tokenResult.qrUrl, mono: true },
+                                { label: 'Raw Token', value: tokenResult.rawToken, mono: true },
+                                { label: 'Expires At', value: new Date(tokenResult.expiresAt).toLocaleString(), mono: false },
+                              ].map((item) => (
+                                <div key={item.label}>
+                                  <p className="font-['Manrope'] text-[10px] uppercase tracking-widest text-[#4e4639]">{item.label}</p>
+                                  <p className={`mt-1.5 rounded-[12px] bg-white px-3 py-2 text-xs text-[#1a1c1b] leading-5 break-all ${item.mono ? 'font-mono' : ''}`}>{item.value}</p>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="font-['Manrope'] text-sm leading-6 text-[#4e4639]">Generate a guest access link for the front-office print workflow.</p>
+                          )}
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+
+                  <div className="space-y-6">
+                    <section className={`${ELEVATED_PANEL_CLASS} p-7`}>
+                      <div className="mb-5 flex items-center gap-3">
                         <span className="material-symbols-outlined text-[#775a19] text-[22px]">manage_accounts</span>
                         <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Active Operator</h3>
                       </div>
@@ -1723,25 +2559,19 @@ export default function HouseApp() {
                           </div>
                         ))}
                       </div>
-                      <button
-                        className="mt-5 w-full flex items-center justify-center gap-2 border border-[#d1c5b4]/50 text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest font-semibold py-3 rounded-[14px] hover:bg-[#f4f3f1] transition-colors"
-                        onClick={handleLogout} type="button"
-                      >
-                        <span className="material-symbols-outlined text-[16px]">logout</span>
+                      <button className="mt-5 w-full rounded-[14px] border border-[#d1c5b4]/50 py-3 font-['Manrope'] text-xs uppercase tracking-widest text-[#775a19]" onClick={handleLogout} type="button">
                         Sign Out
                       </button>
-                    </div>
-                    <div className={`${ELEVATED_PANEL_CLASS} p-7`}>
-                      <div className="flex items-center gap-3 mb-5">
+                    </section>
+                    <section className={`${ELEVATED_PANEL_CLASS} p-7`}>
+                      <div className="mb-5 flex items-center gap-3">
                         <span className="material-symbols-outlined text-[#775a19] text-[22px]">policy</span>
                         <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Audit Trail</h3>
                       </div>
-                      <p className="font-['Manrope'] text-sm text-[#4e4639] leading-6">
-                        Every write action (status changes, menu edits, availability toggles, guest session revokes, shift notes) is logged to the{' '}
-                        <code className="bg-[#f4f3f1] px-1.5 py-0.5 rounded text-xs text-[#1a1c1b]">auditLog</code>
-                        {' '}collection in Firestore with operator name, role, and timestamp.
+                      <p className="font-['Manrope'] text-sm leading-6 text-[#4e4639]">
+                        Every write action is logged to <code className="rounded bg-[#f4f3f1] px-1.5 py-0.5 text-xs text-[#1a1c1b]">auditLog</code> with operator name, role, and timestamp.
                       </p>
-                    </div>
+                    </section>
                   </div>
                 </div>
               </div>
@@ -1818,6 +2648,83 @@ export default function HouseApp() {
                 className="border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#f4f3f1] transition-colors"
                 onClick={() => setEditingProduct(null)} type="button"
               >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {staffEditor ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-2xl rounded-[22px] bg-white shadow-[0_20px_60px_rgba(26,28,27,0.2)]">
+            <div className="flex items-start justify-between gap-4 border-b border-[#f4f3f1] p-6">
+              <div>
+                <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">Manager Controls</p>
+                <h3 className="mt-1 font-['Noto_Serif'] text-2xl text-[#1a1c1b]">
+                  {staffEditor.uid ? 'Update Staff Access' : 'Add Staff Access'}
+                </h3>
+              </div>
+              <button className="rounded border border-[#d1c5b4]/50 px-3 py-1.5 font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]" onClick={() => setStaffEditor(null)} type="button">
+                Close
+              </button>
+            </div>
+            <div className="grid gap-5 p-6 md:grid-cols-2">
+              <UnderlineInput id="staff-name" label="Full Name" value={staffEditor.name} onChange={(v) => setStaffEditor((current) => current ? { ...current, name: v } : current)} />
+              <UnderlineInput id="staff-username" label="Username" value={staffEditor.username} onChange={(v) => setStaffEditor((current) => current ? { ...current, username: v } : current)} />
+              <UnderlineInput id="staff-email" label="Email" value={staffEditor.email} onChange={(v) => setStaffEditor((current) => current ? { ...current, email: v } : current)} />
+              <div>
+                <label className="mb-2 block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">Role</label>
+                <select
+                  value={staffEditor.role}
+                  onChange={(e) => setStaffEditor((current) => current ? { ...current, role: normalizeRole(e.target.value) } : current)}
+                  className="w-full rounded-[14px] bg-[#f4f3f1] px-4 py-3 text-sm text-[#1a1c1b] outline-none"
+                >
+                  <option value="staff">Staff</option>
+                  <option value="manager">Manager</option>
+                </select>
+              </div>
+              <div className="md:col-span-2">
+                <UnderlineInput
+                  id="staff-password"
+                  label={staffEditor.uid ? 'New Password' : 'Temporary Password'}
+                  type="password"
+                  value={staffEditor.password}
+                  onChange={(v) => setStaffEditor((current) => current ? { ...current, password: v } : current)}
+                />
+                <p className="mt-2 text-xs text-[#5f5e5e]">
+                  {staffEditor.uid ? 'Leave blank to keep the current password.' : 'Manager sets the initial password for this account.'}
+                </p>
+              </div>
+              <label className="md:col-span-2 flex items-center gap-3 rounded-[18px] bg-[#f4f3f1] px-4 py-3 font-['Manrope'] text-sm text-[#1a1c1b]">
+                <input
+                  type="checkbox"
+                  checked={staffEditor.active}
+                  onChange={(e) => setStaffEditor((current) => current ? { ...current, active: e.target.checked } : current)}
+                  className="h-4 w-4 accent-[#775a19]"
+                />
+                Active access
+              </label>
+            </div>
+            <div className="flex flex-wrap gap-3 px-6 pb-6">
+              <button
+                type="button"
+                disabled={isSavingStaff || !staffEditor.name.trim() || !staffEditor.username.trim() || !staffEditor.email.trim() || (!staffEditor.uid && !staffEditor.password.trim())}
+                onClick={() => saveStaffAccount(staffEditor)}
+                className="rounded-[14px] bg-[#775a19] px-5 py-3 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] text-white disabled:opacity-50"
+              >
+                {isSavingStaff ? 'Saving…' : staffEditor.uid ? 'Save Access' : 'Create Staff'}
+              </button>
+              {staffEditor.uid ? (
+                <button
+                  type="button"
+                  disabled={passwordResetUid === staffEditor.uid || !staffEditor.password.trim()}
+                  onClick={() => resetStaffPassword(staffEditor.uid as string, staffEditor.password)}
+                  className="rounded-[14px] border border-[#d1c5b4]/50 px-5 py-3 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] text-[#775a19] disabled:opacity-50"
+                >
+                  {passwordResetUid === staffEditor.uid ? 'Updating…' : 'Update Password'}
+                </button>
+              ) : null}
+              <button type="button" onClick={() => setStaffEditor(null)} className="rounded-[14px] border border-[#d1c5b4]/50 px-5 py-3 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] text-[#4e4639]">
                 Cancel
               </button>
             </div>
