@@ -64,6 +64,7 @@
             "test": "vitest run",
             "cap:copy": "npx cap copy",
             "cap:sync": "npx cap sync",
-            "ios:open": "npx cap open ios"
+            "ios:open": "npx cap open ios",
+            "sim:deploy": "bash scripts/deploy-sim.sh"
       }
 }
