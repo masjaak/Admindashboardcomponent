@@ -1413,18 +1413,10 @@ export default function HouseApp() {
 
   /* ── Dashboard ── */
   return (
-    <div
-      className="min-h-screen bg-[#faf9f7]"
-      style={{
-        fontFamily: "'Manrope', sans-serif",
-        color: '#1a1c1b',
-        backgroundImage: 'radial-gradient(circle at top right, rgba(197,160,89,0.10), transparent 24%), radial-gradient(circle at left center, rgba(244,243,241,0.95), transparent 28%)',
-      }}
-    >
-      <div className="flex min-h-screen">
+    <div className="min-h-screen bg-[#faf9f7] text-[#1a1c1b] flex" style={{ fontFamily: "'Manrope', sans-serif" }}>
 
         {/* ── Sidebar ── */}
-        <aside className="hidden lg:flex fixed left-0 top-0 h-full w-64 flex-col bg-stone-100 py-10 z-50">
+        <aside className="hidden md:flex fixed left-0 top-0 h-full w-64 flex-col bg-stone-100 py-10 z-50">
           <div className="px-8 mb-12">
             <h1 className="font-['Noto_Serif'] text-lg font-bold text-amber-900">Atelier Meridian</h1>
             <p className="mt-1 font-['Manrope'] font-medium text-sm tracking-wide text-stone-500">In-Room Dining Admin</p>
@@ -1437,14 +1429,14 @@ export default function HouseApp() {
                 return (
                   <li key={id}>
                     <button
-                      className={`flex w-full items-center justify-between py-4 pl-8 pr-5 text-left transition-all duration-200 font-['Manrope'] text-sm font-medium tracking-wide ${
+                      className={`relative flex w-full items-center justify-between py-4 pl-8 pr-5 text-left transition-all duration-200 font-['Manrope'] text-sm font-medium tracking-wide ${
                         isActive
                           ? 'bg-white text-amber-900 rounded-l-full font-bold'
                           : 'text-stone-600 hover:bg-white/50'
                       }`}
                       onClick={() => setActiveTab(id)}
                       type="button"
-                    >
+                      >
                       <span className="flex items-center gap-4">
                         <span
                           className="material-symbols-outlined text-[20px]"
@@ -1454,6 +1446,7 @@ export default function HouseApp() {
                         </span>
                         {label}
                       </span>
+                      {isActive ? <span className="absolute right-0 top-0 h-full w-1 bg-amber-900 rounded-l-sm" /> : null}
                       {badge ? (
                         <span className="rounded-full bg-[#ffdad6] text-[#93000a] px-1.5 py-0.5 text-[10px] font-bold">
                           {badge}
@@ -1478,7 +1471,7 @@ export default function HouseApp() {
         </aside>
 
         {/* ── Main ── */}
-        <div className="flex-1 lg:ml-64 flex flex-col">
+        <main className="flex-1 md:ml-64 relative min-h-screen">
 
           {/* Top bar */}
           <header className="fixed top-0 right-0 z-40 bg-stone-50/80 backdrop-blur-md shadow-[0_20px_40px_rgba(26,28,27,0.06)] w-full md:w-[calc(100%-16rem)] px-8 py-6 flex justify-between items-center">
@@ -1524,9 +1517,9 @@ export default function HouseApp() {
             </div>
           </header>
 
-          <main className="flex-1 pt-32 px-8 lg:px-12 pb-24 max-w-7xl mx-auto w-full">
+          <div className="pt-32 px-8 md:px-12 pb-24 max-w-7xl mx-auto">
 
-            <div className="mb-8 lg:hidden overflow-x-auto">
+            <div className="mb-8 md:hidden overflow-x-auto">
               <div className="inline-flex min-w-max gap-2 rounded-full bg-white/78 p-1.5 shadow-[0_16px_34px_rgba(26,28,27,0.06)] ring-1 ring-[#efe8de]">
                 {navItems.map(({ id, label, icon, badge }) => {
                   const isActive = activeTab === id;
@@ -2568,9 +2561,8 @@ export default function HouseApp() {
               </div>
             ) : null}
 
-          </main>
-        </div>
-      </div>
+          </div>
+        </main>
 
       {/* ── Menu editor modal ── */}
       {editingProduct ? (
