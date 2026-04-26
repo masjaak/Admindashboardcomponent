@@ -127,6 +127,20 @@ const SHIFT_LABELS: Record<ShiftName, string> = {
   night: 'Night — 22:00–06:00',
 };
 
+const BRAND_LOGO_URL = 'https://i.ibb.co.com/B2YJXXG0/Logo-ciputra-copy.png';
+
+const TAB_SEARCH_PLACEHOLDERS: Record<AdminTab, string> = {
+  orders: 'Search orders...',
+  menu: 'Search menu...',
+  feedback: 'Search feedback...',
+  revenue: 'Search revenue...',
+  handover: 'Search notes...',
+  settings: 'Search settings...',
+};
+
+const ELEVATED_PANEL_CLASS = 'rounded-[22px] bg-white/96 ring-1 ring-[#efe8de] shadow-[0_24px_55px_rgba(26,28,27,0.05)] backdrop-blur-sm';
+const TONAL_PANEL_CLASS = 'rounded-[22px] bg-[#f4f3f1]/96 ring-1 ring-[#ebe5dc] shadow-[0_20px_45px_rgba(26,28,27,0.04)]';
+
 function normalizeRole(role: unknown): AdminRole {
   return role === 'staff' ? 'staff' : 'manager';
 }
@@ -248,7 +262,7 @@ function ManagerOnly({ children, role }: { children: React.ReactNode; role: Admi
   if (role === 'manager') return <>{children}</>;
 
   return (
-    <div className="rounded-lg border border-[#d1c5b4]/30 bg-[#f4f3f1] p-8">
+    <div className={`${TONAL_PANEL_CLASS} p-8`}>
       <div className="flex items-start gap-4">
         <span className="material-symbols-outlined text-[#775a19] mt-0.5 text-[20px]">shield</span>
         <div>
@@ -299,6 +313,7 @@ export default function HouseApp() {
 
   // UI state
   const [menuSearch, setMenuSearch] = useState('');
+  const [shellSearch, setShellSearch] = useState('');
   const [editingProduct, setEditingProduct] = useState<MenuEditorState | null>(null);
   const [notificationMessage, setNotificationMessage] = useState('');
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -946,18 +961,32 @@ export default function HouseApp() {
 
   /* ── Dashboard ── */
   return (
-    <div className="min-h-screen bg-[#faf9f7]" style={{ fontFamily: "'Manrope', sans-serif", color: '#1a1c1b' }}>
+    <div
+      className="min-h-screen bg-[#faf9f7]"
+      style={{
+        fontFamily: "'Manrope', sans-serif",
+        color: '#1a1c1b',
+        backgroundImage: 'radial-gradient(circle at top right, rgba(197,160,89,0.10), transparent 24%), radial-gradient(circle at left center, rgba(244,243,241,0.95), transparent 28%)',
+      }}
+    >
       <div className="flex min-h-screen">
 
         {/* ── Sidebar ── */}
-        <aside className="hidden lg:flex fixed left-0 top-0 h-full w-64 flex-col bg-stone-100 py-10 z-50">
-          <div className="px-8 mb-12">
-            <h1 className="font-['Noto_Serif'] text-lg font-bold text-amber-900">Atelier Meridian</h1>
-            <p className="font-['Manrope'] font-medium text-sm tracking-wide text-stone-500 mt-1">In-Room Dining Admin</p>
+        <aside className="hidden lg:flex fixed left-0 top-0 h-full w-[17rem] flex-col bg-[#f4f3f1]/92 py-8 z-50 backdrop-blur-sm">
+          <div className="px-8 mb-10">
+            <div className="flex items-center gap-4">
+              <div className="h-12 w-12 overflow-hidden rounded-full bg-[#e3e2e0] shadow-[0_12px_24px_rgba(26,28,27,0.08)] ring-1 ring-white/70">
+                <img src={BRAND_LOGO_URL} alt="Atelier Meridian logo" className="h-full w-full object-cover" />
+              </div>
+              <div>
+                <h1 className="font-['Noto_Serif'] text-[2rem] leading-none tracking-[-0.03em] text-[#7d2f12]">Atelier Meridian</h1>
+                <p className="mt-1 font-['Manrope'] text-sm tracking-wide text-[#4e4639]">In-Room Dining Admin</p>
+              </div>
+            </div>
           </div>
 
           <nav className="flex-1 overflow-y-auto">
-            <ul className="space-y-1">
+            <ul className="space-y-2 pr-3">
               {navItems.map(({ id, label, icon, badge }) => {
                 const isActive = activeTab === id;
                 return (
@@ -965,15 +994,15 @@ export default function HouseApp() {
                     <button
                       className={`flex w-full items-center justify-between py-4 pl-8 pr-5 text-left transition-all duration-200 font-['Manrope'] text-sm font-medium tracking-wide ${
                         isActive
-                          ? 'bg-white text-amber-900 rounded-l-full font-bold shadow-sm'
-                          : 'text-stone-600 hover:bg-white/50'
+                          ? 'bg-white text-[#8b300f] rounded-r-2xl rounded-l-none font-bold shadow-[0_18px_36px_rgba(26,28,27,0.07)]'
+                          : 'text-[#4e4639] hover:bg-white/55 rounded-r-2xl'
                       }`}
                       onClick={() => setActiveTab(id)}
                       type="button"
                     >
                       <span className="flex items-center gap-4">
                         <span
-                          className="material-symbols-outlined text-[20px]"
+                          className={`material-symbols-outlined text-[20px] ${isActive ? 'text-[#a44615]' : 'text-[#a44615]'}`}
                           style={{ fontVariationSettings: isActive ? "'FILL' 1" : "'FILL' 0" }}
                         >
                           {icon}
@@ -992,9 +1021,16 @@ export default function HouseApp() {
             </ul>
           </nav>
 
-          <div className="px-8 mt-auto">
+          <div className="px-8 mt-auto space-y-3">
             <button
-              className="w-full py-3 px-4 rounded border border-[#d1c5b4]/30 text-[#775a19] font-['Manrope'] font-medium text-sm hover:bg-[#f4f3f1] transition-colors flex items-center justify-center gap-2"
+              className="w-full py-3 px-4 rounded-[14px] border border-[#e2d8cb] bg-white/70 text-[#8d6214] font-['Manrope'] font-medium text-sm hover:bg-white transition-colors flex items-center justify-center gap-2"
+              type="button"
+            >
+              <span className="material-symbols-outlined text-[18px]">support_agent</span>
+              Support Concierge
+            </button>
+            <button
+              className="w-full py-3 px-4 rounded-[14px] border border-[#d1c5b4]/30 text-[#775a19] font-['Manrope'] font-medium text-sm hover:bg-[#faf7f0] transition-colors flex items-center justify-center gap-2"
               onClick={handleLogout} type="button"
             >
               <span className="material-symbols-outlined text-[18px]">logout</span>
@@ -1004,37 +1040,68 @@ export default function HouseApp() {
         </aside>
 
         {/* ── Main ── */}
-        <div className="flex-1 lg:ml-64 flex flex-col">
+        <div className="flex-1 lg:ml-[17rem] flex flex-col">
 
           {/* Top bar */}
-          <header className="fixed top-0 right-0 z-40 bg-stone-50/80 backdrop-blur-md shadow-[0_20px_40px_rgba(26,28,27,0.06)] w-full lg:w-[calc(100%-16rem)] px-6 lg:px-12 py-5 flex justify-between items-center">
-            <div>
-              <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">Operations View</p>
-              <h2 className="font-['Noto_Serif'] text-xl text-[#1a1c1b] leading-tight mt-0.5">
-                {navItems.find((n) => n.id === activeTab)?.label}
-              </h2>
+          <header className="fixed top-0 right-0 z-40 bg-[#faf9f7]/82 backdrop-blur-xl shadow-[0_20px_40px_rgba(26,28,27,0.06)] w-full lg:w-[calc(100%-17rem)] px-6 lg:px-12 py-5 flex justify-between items-center">
+            <div className="font-['Noto_Serif'] text-[1.7rem] leading-none tracking-[-0.03em] text-[#7d2f12]">
+              Atelier Meridian
             </div>
-            <div className="flex items-center gap-5">
+            <div className="flex items-center gap-3 md:gap-5">
+              <div className="relative hidden md:block">
+                <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[#4e4639] text-[18px]">search</span>
+                <input
+                  type="text"
+                  value={shellSearch}
+                  onChange={(e) => setShellSearch(e.target.value)}
+                  placeholder={TAB_SEARCH_PLACEHOLDERS[activeTab]}
+                  className="w-64 rounded-2xl bg-[#e9e8e6]/92 pl-10 pr-4 py-2.5 font-['Manrope'] text-sm text-[#1a1c1b] outline-none placeholder:text-[#6c6457] focus:bg-white focus:ring-1 focus:ring-[#d8c7ac]"
+                />
+              </div>
               {slaBreachedCount > 0 ? (
-                <div className="flex items-center gap-1.5 text-[#ba1a1a]">
+                <div className="hidden md:flex items-center gap-1.5 text-[#ba1a1a]">
                   <span className="material-symbols-outlined text-[20px]">warning</span>
                   <span className="font-['Manrope'] text-xs font-semibold uppercase tracking-widest">{slaBreachedCount} SLA</span>
                 </div>
               ) : null}
-              <button className="text-amber-800 hover:text-amber-700 transition-colors">
+              <button className="text-[#a44615] hover:text-[#8b300f] transition-colors" type="button">
                 <span className="material-symbols-outlined text-[24px]">notifications</span>
               </button>
-              <button className="text-amber-800 hover:text-amber-700 transition-colors">
+              <button className="text-[#a44615] hover:text-[#8b300f] transition-colors" type="button">
                 <span className="material-symbols-outlined text-[24px]">account_circle</span>
               </button>
             </div>
           </header>
 
-          <main className="flex-1 pt-28 px-6 lg:px-12 pb-24 max-w-7xl mx-auto w-full">
+          <main className="flex-1 pt-28 px-6 lg:px-12 pb-24 max-w-[1240px] mx-auto w-full">
+
+            <div className="mb-8 lg:hidden overflow-x-auto">
+              <div className="inline-flex min-w-max gap-2 rounded-full bg-white/78 p-1.5 shadow-[0_16px_34px_rgba(26,28,27,0.06)] ring-1 ring-[#efe8de]">
+                {navItems.map(({ id, label, icon, badge }) => {
+                  const isActive = activeTab === id;
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setActiveTab(id)}
+                      className={`flex items-center gap-2 rounded-full px-4 py-2.5 font-['Manrope'] text-xs font-semibold tracking-wide transition ${
+                        isActive ? 'bg-[#1a1c1b] text-white' : 'text-[#4e4639]'
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-[18px]" style={{ fontVariationSettings: isActive ? "'FILL' 1" : "'FILL' 0" }}>
+                        {icon}
+                      </span>
+                      <span>{label}</span>
+                      {badge ? <span className={`rounded-full px-1.5 py-0.5 text-[10px] ${isActive ? 'bg-white/16 text-white' : 'bg-[#ffdad6] text-[#93000a]'}`}>{badge}</span> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
 
             {/* Notification banner */}
             {notificationMessage ? (
-              <div className="mb-8 flex items-center justify-between bg-[#1a1c1b] px-5 py-3 rounded">
+              <div className="mb-8 flex items-center justify-between rounded-[18px] bg-[#1a1c1b] px-5 py-3 shadow-[0_18px_36px_rgba(26,28,27,0.12)]">
                 <div className="flex items-center gap-3">
                   <span className="material-symbols-outlined text-[#c5a059] text-[20px] shrink-0">notifications</span>
                   <p className="font-['Manrope'] text-sm text-white">{notificationMessage}</p>
@@ -1062,15 +1129,15 @@ export default function HouseApp() {
 
                 {/* Stats grid */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
-                  <div className="bg-white p-6 rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/10">
+                  <div className={`${ELEVATED_PANEL_CLASS} p-6`}>
                     <p className="font-['Manrope'] text-xs tracking-widest text-[#5f5e5e] uppercase mb-1">Total Active</p>
                     <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{activeOrders.length}</p>
                   </div>
-                  <div className="bg-white p-6 rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/10">
+                  <div className={`${ELEVATED_PANEL_CLASS} p-6`}>
                     <p className="font-['Manrope'] text-xs tracking-widest text-[#5f5e5e] uppercase mb-1">Incoming Unread</p>
                     <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{unreadIncomingOrders.length}</p>
                   </div>
-                  <div className="bg-white p-6 rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/10">
+                  <div className={`${TONAL_PANEL_CLASS} p-6`}>
                     <p className="font-['Manrope'] text-xs tracking-widest text-[#5f5e5e] uppercase mb-1">Delayed</p>
                     <p className="font-['Noto_Serif'] text-3xl text-[#ba1a1a]">{slaBreachedCount}</p>
                   </div>
@@ -1078,7 +1145,7 @@ export default function HouseApp() {
 
                 {/* Order cards */}
                 {orders.length === 0 ? (
-                  <div className="bg-white rounded p-12 text-center shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                  <div className={`${ELEVATED_PANEL_CLASS} p-12 text-center`}>
                     <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">restaurant</span>
                     <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No orders yet. Waiting for guest activity.</p>
                   </div>
@@ -1089,12 +1156,12 @@ export default function HouseApp() {
                       return (
                         <div
                           key={order.id}
-                          className={`bg-white rounded shadow-[0_12px_32px_rgba(26,28,27,0.04)] overflow-hidden flex flex-col md:flex-row ${
-                            sla ? 'border-l-4 border-[#ba1a1a]' : 'border border-[#d1c5b4]/10'
+                          className={`${ELEVATED_PANEL_CLASS} overflow-hidden flex flex-col md:flex-row ${
+                            sla ? 'ring-[#e4bbb9] ring-2' : ''
                           }`}
                         >
                           {/* Left panel */}
-                          <div className="p-6 md:w-1/4 bg-[#f4f3f1]/50 flex flex-col justify-between border-b md:border-b-0 md:border-r border-[#d1c5b4]/20">
+                          <div className="p-6 md:w-[26%] bg-[#f4f3f1]/88 flex flex-col justify-between border-b md:border-b-0 md:border-r border-white/70">
                             <div>
                               <span className={`inline-block px-2 py-1 text-xs font-['Manrope'] tracking-wide uppercase rounded-sm mb-3 ${
                                 sla ? 'bg-[#ffdad6] text-[#93000a]' : STATUS_COLORS[order.status] || 'bg-[#e9e8e6] text-[#1a1c1b]'
@@ -1142,7 +1209,7 @@ export default function HouseApp() {
                               </div>
                               <div className="flex flex-wrap gap-2">
                                 <select
-                                  className="appearance-none bg-[#f4f3f1] border-none rounded px-3 py-2 font-['Manrope'] text-sm text-[#1a1c1b] outline-none cursor-pointer"
+                                  className="appearance-none rounded-[14px] bg-[#f4f3f1] px-3 py-2.5 font-['Manrope'] text-sm text-[#1a1c1b] outline-none cursor-pointer ring-1 ring-[#ebe3d8]"
                                   value={order.status}
                                   onChange={(e) => updateOrderStatus(order.id, e.target.value)}
                                 >
@@ -1151,14 +1218,14 @@ export default function HouseApp() {
                                   ))}
                                 </select>
                                 <button
-                                  className="font-['Manrope'] text-sm font-medium bg-[#efeeec] text-[#1a1c1b] px-4 py-2 rounded hover:bg-[#e9e8e6] transition-colors"
+                                  className="font-['Manrope'] text-sm font-medium bg-[#efeeec] text-[#1a1c1b] px-4 py-2.5 rounded-[14px] hover:bg-[#e9e8e6] transition-colors"
                                   onClick={() => markAsRead(order.id)} type="button"
                                 >
                                   Mark Read
                                 </button>
                                 {(order.accessTokenId || order.guestUid) ? (
                                   <button
-                                    className="font-['Manrope'] text-sm font-medium text-[#ba1a1a] px-4 py-2 rounded border border-[#ba1a1a]/20 hover:bg-[#ffdad6] transition-colors disabled:opacity-50 flex items-center gap-1"
+                                    className="font-['Manrope'] text-sm font-medium text-[#ba1a1a] px-4 py-2.5 rounded-[14px] border border-[#ba1a1a]/20 hover:bg-[#ffdad6] transition-colors disabled:opacity-50 flex items-center gap-1"
                                     disabled={revokingSessionId === (order.accessTokenId || order.guestUid)}
                                     onClick={() => handleRevokeGuest(order.accessTokenId || order.guestUid)}
                                     type="button"
@@ -1189,7 +1256,7 @@ export default function HouseApp() {
                     <p className="font-['Manrope'] text-[#4e4639] max-w-md text-sm">Manage the culinary portfolio for in-room dining. Adjust availability to reflect real-time kitchen capacity.</p>
                   </div>
                   <button
-                    className="bg-[#775a19] text-white px-6 py-3 rounded text-sm font-['Manrope'] font-medium tracking-wide hover:bg-[#775a19]/90 transition-all flex items-center gap-2 shadow-[0_8px_16px_rgba(119,90,25,0.15)] shrink-0"
+                    className="bg-[#8b6418] text-white px-6 py-3 rounded-[14px] text-sm font-['Manrope'] font-medium tracking-wide hover:bg-[#775a19]/90 transition-all flex items-center gap-2 shadow-[0_14px_30px_rgba(119,90,25,0.18)] shrink-0"
                     onClick={() => setEditingProduct(getEditorState())} type="button"
                   >
                     <span className="material-symbols-outlined text-[18px]">add</span>
@@ -1202,7 +1269,7 @@ export default function HouseApp() {
                   <div className="relative w-80">
                     <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[#4e4639] text-[20px]">search</span>
                     <input
-                      className="w-full pl-10 pr-4 py-2.5 bg-[#f4f3f1] border-none rounded-full text-sm font-['Manrope'] text-[#1a1c1b] outline-none placeholder:text-[#4e4639]/50"
+                      className="w-full pl-10 pr-4 py-3 bg-[#e9e8e6]/92 border-none rounded-2xl text-sm font-['Manrope'] text-[#1a1c1b] outline-none placeholder:text-[#4e4639]/50 focus:bg-white focus:ring-1 focus:ring-[#d8c7ac]"
                       placeholder="Search menu items…" value={menuSearch}
                       onChange={(e) => setMenuSearch(e.target.value)}
                     />
@@ -1212,7 +1279,7 @@ export default function HouseApp() {
                 {/* Product grid */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                   {filteredProducts.map((product) => (
-                    <article key={product.id} className="group bg-white rounded-lg overflow-hidden relative shadow-[0_4px_20px_rgba(26,28,27,0.04)] transition-transform duration-300 hover:-translate-y-1">
+                    <article key={product.id} className={`group ${ELEVATED_PANEL_CLASS} overflow-hidden relative transition-transform duration-300 hover:-translate-y-1`}>
                       <div className="h-56 overflow-hidden relative bg-[#e9e8e6]">
                         {product.image ? (
                           <img src={product.image} alt={product.name} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
@@ -1264,7 +1331,7 @@ export default function HouseApp() {
                     </article>
                   ))}
                   {filteredProducts.length === 0 ? (
-                    <div className="col-span-full bg-white rounded p-12 text-center shadow-[0_4px_20px_rgba(26,28,27,0.03)]">
+                    <div className={`col-span-full ${ELEVATED_PANEL_CLASS} p-12 text-center`}>
                       <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">menu_book</span>
                       <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No items match your search.</p>
                     </div>
@@ -1285,14 +1352,14 @@ export default function HouseApp() {
                     <p className="font-['Manrope'] text-[#4e4639] text-base font-light leading-relaxed">Review recent dining experiences to maintain the exacting standards of our culinary service.</p>
                   </div>
                   <div className="flex gap-4 shrink-0">
-                    <div className="bg-[#f4f3f1] p-5 rounded min-w-[120px]">
+                    <div className={`${TONAL_PANEL_CLASS} p-5 min-w-[120px]`}>
                       <span className="block text-sm text-[#4e4639] font-['Manrope'] mb-1">Avg Rating</span>
                       <div className="flex items-baseline gap-2">
                         <span className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{averageRating}</span>
                         <span className="material-symbols-outlined text-[#775a19] text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>star</span>
                       </div>
                     </div>
-                    <div className="bg-[#f4f3f1] p-5 rounded min-w-[120px]">
+                    <div className={`${TONAL_PANEL_CLASS} p-5 min-w-[120px]`}>
                       <span className="block text-sm text-[#4e4639] font-['Manrope'] mb-1">Reviews</span>
                       <span className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{feedbackOrders.length}</span>
                     </div>
@@ -1301,7 +1368,7 @@ export default function HouseApp() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {feedbackOrders.length === 0 ? (
-                    <div className="col-span-full bg-white rounded p-12 text-center">
+                    <div className={`col-span-full ${ELEVATED_PANEL_CLASS} p-12 text-center`}>
                       <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">reviews</span>
                       <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No guest feedback yet.</p>
                     </div>
@@ -1311,9 +1378,9 @@ export default function HouseApp() {
                     return (
                       <div
                         key={`feedback-${order.id}`}
-                        className={`bg-white p-7 rounded relative shadow-[0_10px_30px_rgba(26,28,27,0.03)] flex flex-col ${
+                        className={`${ELEVATED_PANEL_CLASS} p-7 relative flex flex-col ${
                           isFeatured ? 'lg:col-span-2' : ''
-                        } ${isActionRequired ? 'border-l-4 border-[#ba1a1a]/50' : 'border border-[#d1c5b4]/20'}`}
+                        } ${isActionRequired ? 'ring-[#e4bbb9] ring-2' : ''}`}
                       >
                         <div className="flex justify-between items-start mb-5">
                           <div>
@@ -1383,12 +1450,12 @@ export default function HouseApp() {
                     </div>
                     <div className="flex gap-3">
                       <input
-                        className="bg-[#f4f3f1] border-none rounded px-4 py-2.5 font-['Manrope'] text-sm text-[#1a1c1b] outline-none"
+                        className="rounded-[14px] bg-[#e9e8e6]/92 px-4 py-2.5 font-['Manrope'] text-sm text-[#1a1c1b] outline-none ring-1 ring-[#ece5db]"
                         type="date" value={selectedDate}
                         onChange={(e) => setSelectedDate(e.target.value)}
                       />
                       <button
-                        className="flex items-center gap-2 text-[#775a19] font-['Manrope'] font-medium text-sm px-4 py-2.5 border border-[#d1c5b4]/30 rounded hover:bg-[#f4f3f1] transition-colors"
+                        className="flex items-center gap-2 text-[#775a19] font-['Manrope'] font-medium text-sm px-4 py-2.5 border border-[#d1c5b4]/30 rounded-[14px] hover:bg-[#f4f3f1] transition-colors"
                         onClick={exportRevenue} type="button"
                       >
                         <span className="material-symbols-outlined text-[18px]">download</span>
@@ -1399,7 +1466,7 @@ export default function HouseApp() {
 
                   {/* KPI Grid */}
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
-                    <div className="bg-white rounded-lg p-8 shadow-[0_8px_24px_rgba(26,28,27,0.03)] relative overflow-hidden group">
+                    <div className={`${ELEVATED_PANEL_CLASS} p-8 relative overflow-hidden group`}>
                       <div className="absolute -right-8 -top-8 w-32 h-32 bg-[#c5a059]/10 rounded-full blur-2xl group-hover:bg-[#c5a059]/20 transition-all" />
                       <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Total Revenue</p>
                       <h3 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] mb-4 tracking-tight">{formatIdr(revenueSummary.kpi.revenue)}</h3>
@@ -1408,7 +1475,7 @@ export default function HouseApp() {
                         <span className="font-['Manrope'] text-xs text-[#5f5e5e]">Selected date</span>
                       </div>
                     </div>
-                    <div className="bg-[#f4f3f1] rounded-lg p-8 relative overflow-hidden border border-[#e9e8e6]/30">
+                    <div className={`${TONAL_PANEL_CLASS} p-8 relative overflow-hidden`}>
                       <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Completed Orders</p>
                       <h3 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] mb-4 tracking-tight">{revenueSummary.kpi.completedOrders}</h3>
                       <div className="flex items-center gap-2 text-sm">
@@ -1416,7 +1483,7 @@ export default function HouseApp() {
                         <span className="font-['Manrope'] text-xs text-[#5f5e5e]">Fulfilled</span>
                       </div>
                     </div>
-                    <div className="bg-[#f4f3f1] rounded-lg p-8 relative overflow-hidden border border-[#e9e8e6]/30">
+                    <div className={`${TONAL_PANEL_CLASS} p-8 relative overflow-hidden`}>
                       <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Cancelled Orders</p>
                       <h3 className="font-['Noto_Serif'] text-4xl text-[#ba1a1a] mb-4 tracking-tight">{revenueSummary.kpi.cancelledOrders}</h3>
                       <div className="flex items-center gap-2 text-sm">
@@ -1427,14 +1494,14 @@ export default function HouseApp() {
                   </div>
 
                   {/* Revenue rows */}
-                  <div className="bg-white rounded-xl p-8 mb-8 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                  <div className={`${ELEVATED_PANEL_CLASS} p-8 mb-8`}>
                     <div className="flex justify-between items-center mb-6 border-b border-[#f4f3f1] pb-4">
                       <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Top Performing Orders</h3>
                       <span className="font-['Manrope'] text-xs text-[#5f5e5e]">{revenueSummary.rows.length} entries</span>
                     </div>
                     <div className="flex flex-col gap-3">
                       {revenueSummary.rows.map((row) => (
-                        <div key={row.id} className="flex items-center justify-between p-4 bg-[#f4f3f1] rounded-lg hover:bg-[#efeeec] transition-colors group cursor-pointer">
+                        <div key={row.id} className="flex items-center justify-between p-4 bg-[#f4f3f1] rounded-[18px] hover:bg-[#efeeec] transition-colors group cursor-pointer">
                           <div className="flex items-center gap-4">
                             <div className="w-12 h-12 rounded overflow-hidden bg-[#e9e8e6] flex items-center justify-center">
                               <span className="material-symbols-outlined text-[#d1c5b4] text-[24px]">receipt</span>
@@ -1456,7 +1523,7 @@ export default function HouseApp() {
                     </div>
                   </div>
 
-                  <div className="bg-[#f4f3f1] p-6 rounded-lg border border-[#e9e8e6]/30">
+                  <div className={`${TONAL_PANEL_CLASS} p-6`}>
                     <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Insight</p>
                     <p className="font-['Manrope'] text-sm text-[#4e4639] leading-relaxed">
                       Review completed orders by date to track revenue trends and identify peak service windows. Export to Excel for deeper analysis in Numbers or Excel.
@@ -1477,7 +1544,7 @@ export default function HouseApp() {
                 </div>
                 <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
                   {/* Compose */}
-                  <div className="bg-white rounded-lg p-6 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                  <div className={`${ELEVATED_PANEL_CLASS} p-6`}>
                     <div className="flex items-center gap-3 mb-5">
                       <span className="material-symbols-outlined text-[#775a19] text-[22px]">description</span>
                       <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Leave a Note</h3>
@@ -1503,14 +1570,14 @@ export default function HouseApp() {
                       <div>
                         <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">Note</p>
                         <textarea
-                          className="w-full bg-[#f4f3f1] border-none rounded px-4 py-3 font-['Manrope'] text-sm text-[#1a1c1b] outline-none resize-none min-h-[140px] placeholder:text-[#4e4639]/50"
+                          className="w-full bg-[#f4f3f1] border-none rounded-[18px] px-4 py-3 font-['Manrope'] text-sm text-[#1a1c1b] outline-none resize-none min-h-[140px] placeholder:text-[#4e4639]/50 ring-1 ring-[#ece5db]"
                           placeholder="e.g. Suite 402 guest requires dairy-free options. Fryer #2 under maintenance until 18:00."
                           value={handoverDraft}
                           onChange={(e) => setHandoverDraft(e.target.value)}
                         />
                       </div>
                       <button
-                        className="w-full bg-[#775a19] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold py-3 rounded hover:bg-[#775a19]/90 transition-colors shadow-[0_4px_14px_rgba(119,90,25,0.2)] disabled:opacity-50"
+                        className="w-full bg-[#775a19] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold py-3 rounded-[14px] hover:bg-[#775a19]/90 transition-colors shadow-[0_10px_24px_rgba(119,90,25,0.18)] disabled:opacity-50"
                         disabled={!handoverDraft.trim() || isSavingNote}
                         onClick={saveHandoverNote} type="button"
                       >
@@ -1524,7 +1591,7 @@ export default function HouseApp() {
                     {(['morning', 'afternoon', 'night'] as ShiftName[]).map((s) => {
                       const notes = shiftNotesByShift[s];
                       return (
-                        <div key={s} className="bg-white rounded-lg p-5 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                        <div key={s} className={`${ELEVATED_PANEL_CLASS} p-5`}>
                           <div className="flex items-center justify-between mb-4">
                             <div>
                               <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold capitalize">{s}</p>
@@ -1539,7 +1606,7 @@ export default function HouseApp() {
                           ) : (
                             <div className="space-y-3">
                               {notes.slice(0, 5).map((note) => (
-                                <div key={note.id} className="bg-[#f4f3f1] rounded p-4">
+                                <div key={note.id} className="bg-[#f4f3f1] rounded-[18px] p-4">
                                   <p className="font-['Manrope'] text-sm text-[#1a1c1b] leading-6">{note.note}</p>
                                   <div className="mt-2 flex items-center justify-between">
                                     <span className="font-['Manrope'] text-[10px] text-[#4e4639] font-semibold">{note.authorName}</span>
@@ -1570,7 +1637,7 @@ export default function HouseApp() {
                 </div>
                 <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
                   {/* QR Access */}
-                  <div className="bg-white rounded-lg p-8 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                  <div className={`${ELEVATED_PANEL_CLASS} p-8`}>
                     <div className="flex items-center gap-3 mb-7">
                       <span className="material-symbols-outlined text-[#775a19] text-[22px]">qr_code_2</span>
                       <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Guest QR Access</h3>
@@ -1611,7 +1678,7 @@ export default function HouseApp() {
                         </div>
                         {tokenStatus ? <p className="font-['Manrope'] text-xs text-[#4e4639]">{tokenStatus}</p> : null}
                       </div>
-                      <div className="bg-[#f4f3f1] rounded p-5">
+                      <div className={`${TONAL_PANEL_CLASS} p-5`}>
                         <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-4">Print Pack</p>
                         {tokenResult ? (
                           <div className="space-y-4 font-['Manrope'] text-sm">
@@ -1638,8 +1705,8 @@ export default function HouseApp() {
                   </div>
 
                   {/* Right column */}
-                  <div className="space-y-5">
-                    <div className="bg-white rounded-lg p-7 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                    <div className="space-y-5">
+                    <div className={`${ELEVATED_PANEL_CLASS} p-7`}>
                       <div className="flex items-center gap-3 mb-5">
                         <span className="material-symbols-outlined text-[#775a19] text-[22px]">manage_accounts</span>
                         <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Active Operator</h3>
@@ -1657,14 +1724,14 @@ export default function HouseApp() {
                         ))}
                       </div>
                       <button
-                        className="mt-5 w-full flex items-center justify-center gap-2 border border-[#d1c5b4]/50 text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest font-semibold py-3 rounded hover:bg-[#f4f3f1] transition-colors"
+                        className="mt-5 w-full flex items-center justify-center gap-2 border border-[#d1c5b4]/50 text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest font-semibold py-3 rounded-[14px] hover:bg-[#f4f3f1] transition-colors"
                         onClick={handleLogout} type="button"
                       >
                         <span className="material-symbols-outlined text-[16px]">logout</span>
                         Sign Out
                       </button>
                     </div>
-                    <div className="bg-white rounded-lg p-7 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                    <div className={`${ELEVATED_PANEL_CLASS} p-7`}>
                       <div className="flex items-center gap-3 mb-5">
                         <span className="material-symbols-outlined text-[#775a19] text-[22px]">policy</span>
                         <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Audit Trail</h3>
