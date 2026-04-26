@@ -13,28 +13,6 @@ import {
   updateDoc,
 } from 'firebase/firestore';
 import { User, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import {
-  AlertTriangle,
-  Bell,
-  BookOpen,
-  CheckCircle2,
-  Clock,
-  Copy,
-  LayoutGrid,
-  LineChart,
-  LogOut,
-  MessageSquare,
-  PencilLine,
-  Plus,
-  QrCode,
-  Search,
-  Settings2,
-  ShieldBan,
-  ShieldCheck,
-  Sparkles,
-  UserCircle2,
-  UtensilsCrossed,
-} from 'lucide-react';
 import { auth, db } from '../../lib/firebase';
 import { createGuestQrToken, revokeGuestSessionAsAdmin } from '../../lib/adminAccess';
 import { useDynamicTitle } from '../../hooks/useDynamicTitle';
@@ -272,7 +250,7 @@ function ManagerOnly({ children, role }: { children: React.ReactNode; role: Admi
   return (
     <div className="rounded-lg border border-[#d1c5b4]/30 bg-[#f4f3f1] p-8">
       <div className="flex items-start gap-4">
-        <ShieldCheck className="mt-0.5 h-5 w-5 text-[#775a19]" />
+        <span className="material-symbols-outlined text-[#775a19] mt-0.5 text-[20px]">shield</span>
         <div>
           <p className="font-['Manrope'] text-sm font-semibold text-[#1a1c1b]">Manager access only</p>
           <p className="mt-1 font-['Manrope'] text-sm leading-6 text-[#4e4639]">
@@ -405,10 +383,16 @@ export default function HouseApp() {
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       if (!user) { setIdentity(null); setAuthReady(true); return; }
-      const resolved = await loadIdentity(user);
-      setIdentity(resolved);
-      setAuthReady(true);
-      if (!resolved) { setAuthError('Account is not active for admin access.'); await signOut(auth); }
+      try {
+        const resolved = await loadIdentity(user);
+        setIdentity(resolved);
+      } catch {
+        setIdentity(null);
+        setAuthError('Unexpected error loading session. Please try again.');
+        await signOut(auth).catch(() => {});
+      } finally {
+        setAuthReady(true);
+      }
     });
     return () => unsub();
   }, []);
@@ -448,26 +432,44 @@ export default function HouseApp() {
 
   /* ── Nav ── */
   const navItems = [
-    { id: 'orders' as const, label: 'Live Orders', icon: Bell, badge: unreadIncomingOrders.length || undefined },
-    { id: 'menu' as const, label: 'Menu Manager', icon: LayoutGrid },
-    { id: 'feedback' as const, label: 'Feedback', icon: MessageSquare, badge: needsReviewOrders.length || undefined },
-    { id: 'revenue' as const, label: 'Revenue', icon: LineChart },
-    { id: 'handover' as const, label: 'Handover Notes', icon: BookOpen },
-    { id: 'settings' as const, label: 'Settings', icon: Settings2 },
+    { id: 'orders' as const, label: 'Live Orders', icon: 'restaurant', badge: unreadIncomingOrders.length || undefined },
+    { id: 'revenue' as const, label: 'Revenue', icon: 'payments' },
+    { id: 'menu' as const, label: 'Menu Manager', icon: 'menu_book' },
+    { id: 'feedback' as const, label: 'Feedback', icon: 'reviews', badge: needsReviewOrders.length || undefined },
+    { id: 'handover' as const, label: 'Handover Notes', icon: 'description' },
+    { id: 'settings' as const, label: 'Settings', icon: 'settings' },
   ];
 
   /* ── Helpers ── */
   async function loadIdentity(user: User): Promise<AdminIdentity | null> {
-    const snap = await getDoc(doc(db, 'admin_users', user.uid));
-    const profile = snap.exists() ? snap.data() : null;
+    let profile: Record<string, unknown> | null = null;
+    try {
+      const snap = await getDoc(doc(db, 'admin_users', user.uid));
+      profile = snap.exists() ? snap.data() : null;
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      if (code === 'permission-denied') {
+        setAuthError('Admin account not set up yet. Add your UID to admin_users in Firebase Console.');
+      } else {
+        setAuthError('Could not load admin profile. Check your internet connection.');
+      }
+      await signOut(auth);
+      return null;
+    }
     const session = resolveAdminSession({
       uid: user.uid,
       email: user.email || '',
       profile: profile
-        ? { name: String(profile.name || 'Hotel Operator'), role: normalizeRole(profile.role), active: profile.active !== false }
+        ? { name: String(profile.name || 'Hotel Operator'), role: normalizeRole(profile.role as string), active: profile.active !== false }
         : null,
     });
-    if (session.status !== 'authenticated') return null;
+    if (session.status !== 'authenticated') {
+      setAuthError(session.reason === 'missing-profile'
+        ? 'Admin account not found. Contact your manager to be added to admin_users.'
+        : 'Account is inactive. Contact your manager.');
+      await signOut(auth);
+      return null;
+    }
     return {
       uid: session.uid, email: session.email, name: session.name, role: session.role,
       hotelId: String(profile?.hotelId || 'atelier-meridian-demo'),
@@ -865,7 +867,10 @@ export default function HouseApp() {
                 {/* Error */}
                 {authError ? (
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.6rem', borderRadius: '0.75rem', background: 'rgba(255,218,214,0.15)', border: '1px solid rgba(186,26,26,0.4)', padding: '0.75rem 1rem' }}>
-                    <AlertTriangle style={{ width: '14px', height: '14px', color: '#ffb4ab', flexShrink: 0, marginTop: '1px' }} />
+                    <svg style={{ width: '14px', height: '14px', color: '#ffb4ab', flexShrink: 0, marginTop: '1px' }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                      <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
                     <p style={{ margin: 0, fontSize: '12px', color: '#ffb4ab', lineHeight: 1.5 }}>{authError}</p>
                   </div>
                 ) : null}
@@ -941,60 +946,42 @@ export default function HouseApp() {
 
   /* ── Dashboard ── */
   return (
-    <div className="min-h-screen bg-[#faf9f7] font-['Manrope'] text-[#1a1c1b]">
+    <div className="min-h-screen bg-[#faf9f7]" style={{ fontFamily: "'Manrope', sans-serif", color: '#1a1c1b' }}>
       <div className="flex min-h-screen">
 
         {/* ── Sidebar ── */}
         <aside className="hidden lg:flex fixed left-0 top-0 h-full w-64 flex-col bg-stone-100 py-10 z-50">
-          <div className="px-8 mb-10">
-            <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded bg-[#1a1c1b]">
-                <UtensilsCrossed className="h-4 w-4 text-[#c5a059]" />
-              </div>
-              <div>
-                <p className="text-[10px] uppercase tracking-[0.25em] text-[#4e4639] font-semibold">Atelier Meridian</p>
-                <p className="font-['Noto_Serif'] text-base text-[#1a1c1b] leading-tight">Admin</p>
-              </div>
-            </div>
-
-            <div className="mt-6 bg-white rounded p-3 shadow-[0_4px_12px_rgba(26,28,27,0.04)]">
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold text-[#1a1c1b] truncate">{identity.name}</p>
-                  <p className="text-xs text-[#4e4639] truncate mt-0.5">{identity.username}</p>
-                </div>
-                <span className={`shrink-0 rounded px-2 py-0.5 text-[10px] uppercase tracking-widest font-bold ${
-                  identity.role === 'manager' ? 'bg-[#1a1c1b] text-white' : 'bg-[#ffdea5] text-[#775a19]'
-                }`}>
-                  {identity.role}
-                </span>
-              </div>
-            </div>
+          <div className="px-8 mb-12">
+            <h1 className="font-['Noto_Serif'] text-lg font-bold text-amber-900">Atelier Meridian</h1>
+            <p className="font-['Manrope'] font-medium text-sm tracking-wide text-stone-500 mt-1">In-Room Dining Admin</p>
           </div>
 
           <nav className="flex-1 overflow-y-auto">
-            <ul className="space-y-0.5">
-              {navItems.map(({ id, label, icon: Icon, badge }) => {
+            <ul className="space-y-1">
+              {navItems.map(({ id, label, icon, badge }) => {
                 const isActive = activeTab === id;
                 return (
                   <li key={id}>
                     <button
-                      className={`flex w-full items-center justify-between py-4 pl-8 pr-5 text-left transition-all duration-150 font-['Manrope'] text-sm font-medium tracking-wide ${
+                      className={`flex w-full items-center justify-between py-4 pl-8 pr-5 text-left transition-all duration-200 font-['Manrope'] text-sm font-medium tracking-wide ${
                         isActive
-                          ? 'bg-white text-[#775a19] rounded-l-full font-bold shadow-[0_4px_12px_rgba(26,28,27,0.04)]'
+                          ? 'bg-white text-amber-900 rounded-l-full font-bold shadow-sm'
                           : 'text-stone-600 hover:bg-white/50'
                       }`}
                       onClick={() => setActiveTab(id)}
                       type="button"
                     >
-                      <span className="flex items-center gap-3">
-                        <Icon className="h-4 w-4 text-[#775a19]" />
+                      <span className="flex items-center gap-4">
+                        <span
+                          className="material-symbols-outlined text-[20px]"
+                          style={{ fontVariationSettings: isActive ? "'FILL' 1" : "'FILL' 0" }}
+                        >
+                          {icon}
+                        </span>
                         {label}
                       </span>
                       {badge ? (
-                        <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
-                          isActive ? 'bg-[#775a19]/10 text-[#775a19]' : 'bg-[#ffdad6] text-[#93000a]'
-                        }`}>
+                        <span className="rounded-full bg-[#ffdad6] text-[#93000a] px-1.5 py-0.5 text-[10px] font-bold">
                           {badge}
                         </span>
                       ) : null}
@@ -1005,13 +992,13 @@ export default function HouseApp() {
             </ul>
           </nav>
 
-          <div className="px-8 mt-6">
+          <div className="px-8 mt-auto">
             <button
-              className="w-full flex items-center justify-center gap-2 bg-transparent text-[#775a19] border border-[#d1c5b4]/50 py-3 rounded text-xs font-['Manrope'] uppercase tracking-widest font-semibold hover:bg-white/60 transition-colors"
+              className="w-full py-3 px-4 rounded border border-[#d1c5b4]/30 text-[#775a19] font-['Manrope'] font-medium text-sm hover:bg-[#f4f3f1] transition-colors flex items-center justify-center gap-2"
               onClick={handleLogout} type="button"
             >
-              <LogOut className="h-3.5 w-3.5" />
-              Log Out
+              <span className="material-symbols-outlined text-[18px]">logout</span>
+              Sign Out
             </button>
           </div>
         </aside>
@@ -1020,51 +1007,43 @@ export default function HouseApp() {
         <div className="flex-1 lg:ml-64 flex flex-col">
 
           {/* Top bar */}
-          <header className="sticky top-0 z-40 bg-[#faf9f7]/80 backdrop-blur-md shadow-[0_4px_24px_rgba(26,28,27,0.04)] flex items-center justify-between px-6 lg:px-12 h-16">
+          <header className="fixed top-0 right-0 z-40 bg-stone-50/80 backdrop-blur-md shadow-[0_20px_40px_rgba(26,28,27,0.06)] w-full lg:w-[calc(100%-16rem)] px-6 lg:px-12 py-5 flex justify-between items-center">
             <div>
-              <span className="text-[10px] uppercase tracking-[0.25em] text-[#4e4639] font-semibold">iPad Operations View</span>
-              <h2 className="font-['Noto_Serif'] text-lg text-[#1a1c1b] leading-tight">
+              <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">Operations View</p>
+              <h2 className="font-['Noto_Serif'] text-xl text-[#1a1c1b] leading-tight mt-0.5">
                 {navItems.find((n) => n.id === activeTab)?.label}
               </h2>
             </div>
-
-            <div className="hidden md:flex items-center gap-6">
+            <div className="flex items-center gap-5">
               {slaBreachedCount > 0 ? (
                 <div className="flex items-center gap-1.5 text-[#ba1a1a]">
-                  <AlertTriangle className="h-3.5 w-3.5" />
-                  <span className="font-['Manrope'] text-xs font-semibold uppercase tracking-widest">
-                    {slaBreachedCount} SLA
-                  </span>
+                  <span className="material-symbols-outlined text-[20px]">warning</span>
+                  <span className="font-['Manrope'] text-xs font-semibold uppercase tracking-widest">{slaBreachedCount} SLA</span>
                 </div>
               ) : null}
-              {[
-                { label: 'Incoming', value: unreadIncomingOrders.length },
-                { label: 'Active', value: activeOrders.length },
-                { label: 'Avg Rating', value: averageRating },
-                { label: "Today's Rev", value: formatIdr(revenueSummary.kpi.revenue) },
-              ].map((kpi) => (
-                <div key={kpi.label} className="text-right">
-                  <p className="text-[10px] uppercase tracking-[0.18em] text-[#4e4639]">{kpi.label}</p>
-                  <p className="font-['Noto_Serif'] text-base font-semibold text-[#1a1c1b]">{kpi.value}</p>
-                </div>
-              ))}
+              <button className="text-amber-800 hover:text-amber-700 transition-colors">
+                <span className="material-symbols-outlined text-[24px]">notifications</span>
+              </button>
+              <button className="text-amber-800 hover:text-amber-700 transition-colors">
+                <span className="material-symbols-outlined text-[24px]">account_circle</span>
+              </button>
             </div>
           </header>
 
-          <main className="flex-1 px-6 lg:px-12 py-8">
+          <main className="flex-1 pt-28 px-6 lg:px-12 pb-24 max-w-7xl mx-auto w-full">
 
             {/* Notification banner */}
             {notificationMessage ? (
-              <div className="mb-6 flex items-center justify-between bg-[#1a1c1b] px-5 py-3 rounded">
+              <div className="mb-8 flex items-center justify-between bg-[#1a1c1b] px-5 py-3 rounded">
                 <div className="flex items-center gap-3">
-                  <Bell className="h-4 w-4 text-[#c5a059] shrink-0" />
+                  <span className="material-symbols-outlined text-[#c5a059] text-[20px] shrink-0">notifications</span>
                   <p className="font-['Manrope'] text-sm text-white">{notificationMessage}</p>
                 </div>
                 <button
                   className="text-white/60 hover:text-white text-xs font-['Manrope'] uppercase tracking-widest ml-4 shrink-0"
                   onClick={() => setNotificationMessage('')} type="button"
                 >
-                  Close
+                  Dismiss
                 </button>
               </div>
             ) : null}
@@ -1073,123 +1052,121 @@ export default function HouseApp() {
                 LIVE ORDERS
             ══════════════════════════════════════════ */}
             {activeTab === 'orders' ? (
-              <div className="space-y-4">
+              <div>
+                <div className="flex justify-between items-end mb-10">
+                  <div>
+                    <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight font-semibold">Live Orders</h2>
+                    <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm tracking-wide">Currently monitoring active in-room dining requests.</p>
+                  </div>
+                </div>
+
+                {/* Stats grid */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
+                  <div className="bg-white p-6 rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/10">
+                    <p className="font-['Manrope'] text-xs tracking-widest text-[#5f5e5e] uppercase mb-1">Total Active</p>
+                    <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{activeOrders.length}</p>
+                  </div>
+                  <div className="bg-white p-6 rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/10">
+                    <p className="font-['Manrope'] text-xs tracking-widest text-[#5f5e5e] uppercase mb-1">Incoming Unread</p>
+                    <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{unreadIncomingOrders.length}</p>
+                  </div>
+                  <div className="bg-white p-6 rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/10">
+                    <p className="font-['Manrope'] text-xs tracking-widest text-[#5f5e5e] uppercase mb-1">Delayed</p>
+                    <p className="font-['Noto_Serif'] text-3xl text-[#ba1a1a]">{slaBreachedCount}</p>
+                  </div>
+                </div>
+
+                {/* Order cards */}
                 {orders.length === 0 ? (
-                  <div className="bg-white rounded p-8 text-center shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
-                    <p className="font-['Manrope'] text-sm text-[#4e4639]">No orders yet. Waiting for guest activity.</p>
+                  <div className="bg-white rounded p-12 text-center shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                    <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">restaurant</span>
+                    <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No orders yet. Waiting for guest activity.</p>
                   </div>
                 ) : (
-                  <div className="grid gap-4 xl:grid-cols-2">
+                  <div className="space-y-6">
                     {orders.map((order) => {
                       const sla = isOrderSlaBreached(order);
                       return (
                         <div
                           key={order.id}
-                          className={`bg-white rounded shadow-[0_8px_24px_rgba(26,28,27,0.04)] overflow-hidden ${
-                            sla
-                              ? 'border-l-4 border-[#ba1a1a]'
-                              : !order.isRead
-                                ? 'border-l-4 border-[#775a19]'
-                                : ''
+                          className={`bg-white rounded shadow-[0_12px_32px_rgba(26,28,27,0.04)] overflow-hidden flex flex-col md:flex-row ${
+                            sla ? 'border-l-4 border-[#ba1a1a]' : 'border border-[#d1c5b4]/10'
                           }`}
                         >
-                          {/* SLA warning strip */}
-                          {sla ? (
-                            <div className="flex items-center gap-2 bg-[#ffdad6] px-5 py-2">
-                              <AlertTriangle className="h-3.5 w-3.5 text-[#ba1a1a] shrink-0" />
-                              <p className="font-['Manrope'] text-xs font-semibold text-[#ba1a1a] uppercase tracking-widest">
-                                SLA breached — order waiting &gt;20 min
-                              </p>
-                            </div>
-                          ) : null}
-
-                          {/* Order header */}
-                          <div className="flex items-start justify-between gap-3 px-5 pt-5 pb-4 border-b border-[#f4f3f1]">
+                          {/* Left panel */}
+                          <div className="p-6 md:w-1/4 bg-[#f4f3f1]/50 flex flex-col justify-between border-b md:border-b-0 md:border-r border-[#d1c5b4]/20">
                             <div>
-                              <div className="flex items-center gap-2">
-                                {!order.isRead && !sla ? (
-                                  <span className="h-2 w-2 rounded-full bg-[#775a19] shrink-0" />
-                                ) : null}
-                                <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Room {order.roomNumber}</h3>
-                              </div>
-                              <p className="mt-0.5 font-['Manrope'] text-xs text-[#4e4639]">
+                              <span className={`inline-block px-2 py-1 text-xs font-['Manrope'] tracking-wide uppercase rounded-sm mb-3 ${
+                                sla ? 'bg-[#ffdad6] text-[#93000a]' : STATUS_COLORS[order.status] || 'bg-[#e9e8e6] text-[#1a1c1b]'
+                              }`}>
+                                {sla ? 'Delayed' : order.status.replaceAll('_', ' ')}
+                              </span>
+                              <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Room {order.roomNumber}</h3>
+                              <p className="font-['Manrope'] text-sm text-[#5f5e5e] mt-1">{order.lastName || '—'}</p>
+                            </div>
+                            <div className="mt-6">
+                              <p className="font-['Manrope'] text-[10px] text-[#5f5e5e] tracking-widest uppercase">Ordered</p>
+                              <p className="font-['Manrope'] font-medium text-[#1a1c1b] text-sm mt-0.5">
                                 {order.createdAt ? order.createdAt.toLocaleString() : 'Unknown time'}
                               </p>
                             </div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className={`rounded px-2 py-0.5 font-['Manrope'] text-[10px] uppercase tracking-widest font-semibold ${STATUS_COLORS[order.status] || 'bg-[#e9e8e6] text-[#1a1c1b]'}`}>
-                                {order.status.replaceAll('_', ' ')}
-                              </span>
-                              <span className="rounded px-2 py-0.5 font-['Manrope'] text-[10px] uppercase tracking-widest font-semibold bg-[#f4f3f1] text-[#4e4639]">
-                                {formatIdr(order.total)}
-                              </span>
-                            </div>
                           </div>
 
-                          {/* Order body */}
-                          <div className="grid md:grid-cols-[1.2fr_0.8fr]">
-                            <div className="p-5 bg-[#faf9f7] border-r border-[#f4f3f1]">
-                              <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.18em] text-[#4e4639] font-semibold mb-3">Order Items</p>
-                              <div className="space-y-3">
-                                {order.items.map((item) => (
-                                  <div key={item.id} className="flex items-start justify-between gap-2">
-                                    <div>
-                                      <p className="font-['Manrope'] text-sm font-semibold text-[#1a1c1b]">{item.qty}× {item.name}</p>
-                                      {item.note ? <p className="mt-0.5 font-['Manrope'] text-xs text-[#4e4639] italic">"{item.note}"</p> : null}
-                                    </div>
-                                    <p className="font-['Manrope'] text-sm text-[#4e4639] shrink-0">{formatIdr(item.qty * item.price)}</p>
+                          {/* Right panel */}
+                          <div className="p-6 flex-1 flex flex-col justify-between">
+                            <ul className="space-y-3">
+                              {order.items.map((item) => (
+                                <li key={item.id} className="flex justify-between items-start">
+                                  <div>
+                                    <p className="font-['Manrope'] font-medium text-[#1a1c1b]">{item.qty}× {item.name}</p>
+                                    {item.note ? <p className="font-['Manrope'] text-sm text-[#5f5e5e]">"{item.note}"</p> : null}
                                   </div>
-                                ))}
+                                  <span className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatIdr(item.qty * item.price)}</span>
+                                </li>
+                              ))}
+                            </ul>
+                            <div className="mt-6 flex flex-wrap justify-between items-center pt-4 border-t border-[#d1c5b4]/10 gap-3">
+                              <div className="flex items-center gap-3">
+                                {sla ? (
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="material-symbols-outlined text-[#ba1a1a] text-[18px]">warning</span>
+                                    <span className="font-['Manrope'] text-sm font-medium text-[#ba1a1a]">Kitchen attention required</span>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <span className="font-['Manrope'] text-xs text-[#4e4639]">Total</span>
+                                    <span className="font-['Noto_Serif'] text-base font-semibold text-[#775a19]">{formatIdr(order.total)}</span>
+                                    {order.rating ? <span className="font-['Manrope'] text-xs text-[#5f5e5e]">· {order.rating}/5 ★</span> : null}
+                                  </>
+                                )}
                               </div>
-                            </div>
-
-                            <div className="p-5 flex flex-col gap-4">
-                              <div>
-                                <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.18em] text-[#4e4639] font-semibold mb-2">Guest</p>
-                                <div className="space-y-1 font-['Manrope'] text-sm text-[#1a1c1b]">
-                                  <p><span className="text-[#4e4639]">Name: </span>{order.lastName || '—'}</p>
-                                  <p><span className="text-[#4e4639]">Phone: </span>{order.phoneNumber || '—'}</p>
-                                  <p><span className="text-[#4e4639]">Payment: </span>{order.paymentMethod}</p>
-                                  <p><span className="text-[#4e4639]">Rating: </span>{order.rating ? `${order.rating}/5` : 'Pending'}</p>
-                                </div>
-                                {(order.feedbackText || order.feedbackSummary) ? (
-                                  <p className="mt-2 font-['Manrope'] text-xs text-[#4e4639] italic leading-5">
-                                    "{order.feedbackText || order.feedbackSummary}"
-                                  </p>
-                                ) : null}
-                              </div>
-
-                              <div className="space-y-2">
-                                <div className="relative">
-                                  <select
-                                    className="w-full appearance-none bg-[#f4f3f1] border-none rounded px-3 py-2 font-['Manrope'] text-sm text-[#1a1c1b] outline-none cursor-pointer"
-                                    value={order.status}
-                                    onChange={(e) => updateOrderStatus(order.id, e.target.value)}
-                                  >
-                                    {ORDER_STATUSES.map((s) => (
-                                      <option key={s} value={s}>{s.replaceAll('_', ' ')}</option>
-                                    ))}
-                                  </select>
-                                </div>
-                                <div className="flex gap-2">
+                              <div className="flex flex-wrap gap-2">
+                                <select
+                                  className="appearance-none bg-[#f4f3f1] border-none rounded px-3 py-2 font-['Manrope'] text-sm text-[#1a1c1b] outline-none cursor-pointer"
+                                  value={order.status}
+                                  onChange={(e) => updateOrderStatus(order.id, e.target.value)}
+                                >
+                                  {ORDER_STATUSES.map((s) => (
+                                    <option key={s} value={s}>{s.replaceAll('_', ' ')}</option>
+                                  ))}
+                                </select>
+                                <button
+                                  className="font-['Manrope'] text-sm font-medium bg-[#efeeec] text-[#1a1c1b] px-4 py-2 rounded hover:bg-[#e9e8e6] transition-colors"
+                                  onClick={() => markAsRead(order.id)} type="button"
+                                >
+                                  Mark Read
+                                </button>
+                                {(order.accessTokenId || order.guestUid) ? (
                                   <button
-                                    className="flex-1 border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest py-2 rounded hover:bg-[#f4f3f1] transition-colors"
-                                    onClick={() => markAsRead(order.id)} type="button"
+                                    className="font-['Manrope'] text-sm font-medium text-[#ba1a1a] px-4 py-2 rounded border border-[#ba1a1a]/20 hover:bg-[#ffdad6] transition-colors disabled:opacity-50 flex items-center gap-1"
+                                    disabled={revokingSessionId === (order.accessTokenId || order.guestUid)}
+                                    onClick={() => handleRevokeGuest(order.accessTokenId || order.guestUid)}
+                                    type="button"
                                   >
-                                    Mark Read
+                                    <span className="material-symbols-outlined text-[16px]">block</span>
+                                    Revoke
                                   </button>
-                                  {(order.accessTokenId || order.guestUid) ? (
-                                    <button
-                                      className="flex-1 border border-[#d1c5b4]/50 text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest py-2 rounded hover:bg-[#ffdad6] transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
-                                      disabled={revokingSessionId === (order.accessTokenId || order.guestUid)}
-                                      onClick={() => handleRevokeGuest(order.accessTokenId || order.guestUid)}
-                                      type="button"
-                                    >
-                                      <ShieldBan className="h-3 w-3" />
-                                      Revoke
-                                    </button>
-                                  ) : null}
-                                </div>
+                                ) : null}
                               </div>
                             </div>
                           </div>
@@ -1205,86 +1182,93 @@ export default function HouseApp() {
                 MENU MANAGER
             ══════════════════════════════════════════ */}
             {activeTab === 'menu' ? (
-              <div className="space-y-6">
-                <div className="bg-white rounded p-5 shadow-[0_8px_24px_rgba(26,28,27,0.03)] flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-14 gap-6">
                   <div>
-                    <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">Menu readiness</p>
-                    <p className="mt-1.5 font-['Manrope'] text-sm leading-6 text-[#4e4639]">
-                      Mark dishes as ready or unavailable, edit details, and remove items.
-                    </p>
+                    <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight mb-2">Curated Offerings</h2>
+                    <p className="font-['Manrope'] text-[#4e4639] max-w-md text-sm">Manage the culinary portfolio for in-room dining. Adjust availability to reflect real-time kitchen capacity.</p>
                   </div>
-                  <div className="flex gap-3 flex-wrap">
-                    <div className="relative">
-                      <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#4e4639]" />
-                      <input
-                        className="bg-[#f4f3f1] border-none rounded pl-9 pr-4 py-2.5 font-['Manrope'] text-sm text-[#1a1c1b] outline-none placeholder:text-[#4e4639]/50 w-56"
-                        placeholder="Search menu" value={menuSearch}
-                        onChange={(e) => setMenuSearch(e.target.value)}
-                      />
-                    </div>
-                    <button
-                      className="flex items-center gap-2 bg-[#1a1c1b] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-4 py-2.5 rounded hover:bg-[#1a1c1b]/90 transition-colors"
-                      onClick={() => setEditingProduct(getEditorState())} type="button"
-                    >
-                      <Plus className="h-3.5 w-3.5" />
-                      Add Item
-                    </button>
+                  <button
+                    className="bg-[#775a19] text-white px-6 py-3 rounded text-sm font-['Manrope'] font-medium tracking-wide hover:bg-[#775a19]/90 transition-all flex items-center gap-2 shadow-[0_8px_16px_rgba(119,90,25,0.15)] shrink-0"
+                    onClick={() => setEditingProduct(getEditorState())} type="button"
+                  >
+                    <span className="material-symbols-outlined text-[18px]">add</span>
+                    Add New Creation
+                  </button>
+                </div>
+
+                {/* Search */}
+                <div className="mb-10">
+                  <div className="relative w-80">
+                    <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[#4e4639] text-[20px]">search</span>
+                    <input
+                      className="w-full pl-10 pr-4 py-2.5 bg-[#f4f3f1] border-none rounded-full text-sm font-['Manrope'] text-[#1a1c1b] outline-none placeholder:text-[#4e4639]/50"
+                      placeholder="Search menu items…" value={menuSearch}
+                      onChange={(e) => setMenuSearch(e.target.value)}
+                    />
                   </div>
                 </div>
 
-                <div className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
+                {/* Product grid */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                   {filteredProducts.map((product) => (
-                    <div key={product.id} className="bg-white rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] overflow-hidden">
-                      <div className="p-5">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">{product.name}</h3>
-                            <p className="font-['Manrope'] text-xs text-[#4e4639] mt-0.5">{product.category}</p>
+                    <article key={product.id} className="group bg-white rounded-lg overflow-hidden relative shadow-[0_4px_20px_rgba(26,28,27,0.04)] transition-transform duration-300 hover:-translate-y-1">
+                      <div className="h-56 overflow-hidden relative bg-[#e9e8e6]">
+                        {product.image ? (
+                          <img src={product.image} alt={product.name} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">restaurant_menu</span>
                           </div>
-                          <span className={`rounded px-2 py-0.5 font-['Manrope'] text-[10px] uppercase tracking-widest font-semibold shrink-0 ${
-                            product.isAvailable ? 'bg-emerald-50 text-emerald-700' : 'bg-[#ffdad6] text-[#93000a]'
-                          }`}>
-                            {product.isAvailable ? 'Ready' : 'Unavailable'}
+                        )}
+                        <div className="absolute inset-0 bg-gradient-to-t from-white/90 via-white/20 to-transparent" />
+                        <div className="absolute top-4 left-4 bg-white/80 backdrop-blur-md px-3 py-1 rounded-full flex items-center gap-2">
+                          <div className={`w-2 h-2 rounded-full ${product.isAvailable ? 'bg-[#4caf50]' : 'bg-[#ba1a1a]'}`} />
+                          <span className="font-['Manrope'] text-xs uppercase tracking-wider text-[#1a1c1b] font-semibold">
+                            {product.isAvailable ? 'Available' : 'Offline'}
                           </span>
                         </div>
-                        <p className="mt-3 font-['Manrope'] text-sm leading-6 text-[#4e4639]">{product.description}</p>
-                        <div className="mt-3 bg-[#f4f3f1] px-4 py-2.5 rounded">
-                          <p className="font-['Manrope'] text-[10px] uppercase tracking-widest text-[#4e4639]">Guest price</p>
-                          <p className="font-['Noto_Serif'] text-base font-semibold text-[#775a19] mt-0.5">{formatIdr(product.price)}</p>
+                      </div>
+                      <div className="p-5 relative -mt-8">
+                        <div className="flex justify-between items-start mb-2">
+                          <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b] leading-tight w-3/4">{product.name}</h3>
+                          <span className="font-['Noto_Serif'] text-lg text-[#775a19]">{formatIdr(product.price)}</span>
                         </div>
-                        {product.unavailableReason ? (
-                          <p className="mt-3 font-['Manrope'] text-xs text-[#ba1a1a] bg-[#ffdad6] px-3 py-2 rounded">
-                            {product.unavailableReason}
-                          </p>
-                        ) : null}
-                        <div className="mt-4 flex flex-wrap gap-2">
-                          <button
-                            className={`font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-3 py-2 rounded transition-colors ${
-                              product.isAvailable
-                                ? 'border border-[#d1c5b4]/50 text-[#4e4639] hover:bg-[#f4f3f1]'
-                                : 'bg-[#775a19] text-white hover:bg-[#775a19]/90'
-                            }`}
-                            onClick={() => toggleProductAvailability(product)} type="button"
-                          >
-                            {product.isAvailable ? 'Set Unavailable' : 'Set Ready'}
-                          </button>
-                          <button
-                            className="flex items-center gap-1 border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-3 py-2 rounded hover:bg-[#f4f3f1] transition-colors"
-                            onClick={() => setEditingProduct(getEditorState(product))} type="button"
-                          >
-                            <PencilLine className="h-3 w-3" />
-                            Edit
-                          </button>
-                          <button
-                            className="border border-[#d1c5b4]/50 text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-3 py-2 rounded hover:bg-[#ffdad6] transition-colors"
-                            onClick={() => deleteProduct(product.id)} type="button"
-                          >
-                            Remove
-                          </button>
+                        <p className="font-['Manrope'] text-sm text-[#4e4639] mb-2 line-clamp-2">{product.description}</p>
+                        <p className="font-['Manrope'] text-xs text-[#4e4639]/70 uppercase tracking-widest">{product.category}</p>
+                        <div className="flex justify-between items-center pt-4 mt-4 border-t border-[#f4f3f1]">
+                          <div className="flex gap-1">
+                            <button
+                              className="text-[#775a19] hover:text-[#4e3700] transition-colors p-2 rounded-full hover:bg-[#f4f3f1]"
+                              onClick={() => setEditingProduct(getEditorState(product))} type="button"
+                            >
+                              <span className="material-symbols-outlined text-[20px]">edit</span>
+                            </button>
+                            <button
+                              className="text-[#ba1a1a] hover:text-[#93000a] transition-colors p-2 rounded-full hover:bg-[#ffdad6]"
+                              onClick={() => deleteProduct(product.id)} type="button"
+                            >
+                              <span className="material-symbols-outlined text-[20px]">delete</span>
+                            </button>
+                          </div>
+                          <label className="relative inline-flex items-center cursor-pointer">
+                            <input
+                              type="checkbox" className="sr-only peer"
+                              checked={product.isAvailable}
+                              onChange={() => toggleProductAvailability(product)}
+                            />
+                            <div className="w-11 h-6 bg-[#e9e8e6] rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:border-[#e9e8e6] after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#775a19]" />
+                          </label>
                         </div>
                       </div>
-                    </div>
+                    </article>
                   ))}
+                  {filteredProducts.length === 0 ? (
+                    <div className="col-span-full bg-white rounded p-12 text-center shadow-[0_4px_20px_rgba(26,28,27,0.03)]">
+                      <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">menu_book</span>
+                      <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No items match your search.</p>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             ) : null}
@@ -1293,57 +1277,95 @@ export default function HouseApp() {
                 FEEDBACK
             ══════════════════════════════════════════ */}
             {activeTab === 'feedback' ? (
-              <div className="space-y-6">
-                <div className="grid gap-4 md:grid-cols-3">
-                  {[
-                    { label: 'Feedback Entries', value: feedbackOrders.length },
-                    { label: 'Needs Manager', value: needsReviewOrders.length },
-                    { label: 'Average Rating', value: averageRating },
-                  ].map((kpi) => (
-                    <div key={kpi.label} className="bg-white rounded p-5 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
-                      <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.18em] text-[#4e4639] font-semibold">{kpi.label}</p>
-                      <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b] mt-2">{kpi.value}</p>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="grid gap-4 xl:grid-cols-2">
-                  {feedbackOrders.map((order) => (
-                    <div
-                      key={`feedback-${order.id}`}
-                      className={`bg-white rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] overflow-hidden ${
-                        order.managerFollowUpRequested ? 'border-l-4 border-[#ba1a1a]' : ''
-                      }`}
-                    >
-                      <div className="p-5">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Room {order.roomNumber}</h3>
-                            <p className="font-['Manrope'] text-xs text-[#4e4639] mt-0.5">
-                              {order.createdAt ? order.createdAt.toLocaleString() : 'Unknown time'}
-                            </p>
-                          </div>
-                          <div className="flex flex-col items-end gap-1.5">
-                            {order.rating ? (
-                              <span className={`rounded px-2 py-0.5 font-['Manrope'] text-[10px] uppercase tracking-widest font-semibold ${
-                                order.rating <= 3 ? 'bg-[#ffdad6] text-[#93000a]' : 'bg-emerald-50 text-emerald-700'
-                              }`}>
-                                {order.rating} / 5
-                              </span>
-                            ) : null}
-                            {order.managerFollowUpRequested ? (
-                              <span className="rounded px-2 py-0.5 font-['Manrope'] text-[10px] uppercase tracking-widest font-semibold bg-[#1a1c1b] text-white">
-                                Follow-up
-                              </span>
-                            ) : null}
-                          </div>
-                        </div>
-                        <div className="mt-4 bg-[#f4f3f1] p-4 rounded font-['Manrope'] text-sm leading-6 text-[#4e4639] italic">
-                          "{order.feedbackText || order.feedbackSummary || 'Guest submitted a rating without written comments.'}"
-                        </div>
+              <div>
+                <div className="flex flex-col md:flex-row md:justify-between md:items-end mb-10 gap-6">
+                  <div className="max-w-2xl">
+                    <span className="uppercase tracking-[0.1em] text-xs font-bold text-[#775a19] mb-3 block font-['Manrope']">Guest Relations</span>
+                    <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight mb-3">Curated Feedback</h2>
+                    <p className="font-['Manrope'] text-[#4e4639] text-base font-light leading-relaxed">Review recent dining experiences to maintain the exacting standards of our culinary service.</p>
+                  </div>
+                  <div className="flex gap-4 shrink-0">
+                    <div className="bg-[#f4f3f1] p-5 rounded min-w-[120px]">
+                      <span className="block text-sm text-[#4e4639] font-['Manrope'] mb-1">Avg Rating</span>
+                      <div className="flex items-baseline gap-2">
+                        <span className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{averageRating}</span>
+                        <span className="material-symbols-outlined text-[#775a19] text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>star</span>
                       </div>
                     </div>
-                  ))}
+                    <div className="bg-[#f4f3f1] p-5 rounded min-w-[120px]">
+                      <span className="block text-sm text-[#4e4639] font-['Manrope'] mb-1">Reviews</span>
+                      <span className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{feedbackOrders.length}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {feedbackOrders.length === 0 ? (
+                    <div className="col-span-full bg-white rounded p-12 text-center">
+                      <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">reviews</span>
+                      <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No guest feedback yet.</p>
+                    </div>
+                  ) : feedbackOrders.map((order, i) => {
+                    const isFeatured = i === 0;
+                    const isActionRequired = order.managerFollowUpRequested || (order.rating !== null && order.rating <= 3);
+                    return (
+                      <div
+                        key={`feedback-${order.id}`}
+                        className={`bg-white p-7 rounded relative shadow-[0_10px_30px_rgba(26,28,27,0.03)] flex flex-col ${
+                          isFeatured ? 'lg:col-span-2' : ''
+                        } ${isActionRequired ? 'border-l-4 border-[#ba1a1a]/50' : 'border border-[#d1c5b4]/20'}`}
+                      >
+                        <div className="flex justify-between items-start mb-5">
+                          <div>
+                            {order.rating !== null ? (
+                              <div className="flex items-center gap-0.5 mb-2">
+                                {[1,2,3,4,5].map((star) => (
+                                  <span
+                                    key={star}
+                                    className="material-symbols-outlined text-xl"
+                                    style={{
+                                      fontVariationSettings: "'FILL' 1",
+                                      color: order.rating !== null && star <= order.rating
+                                        ? (order.rating <= 3 ? '#ba1a1a' : '#775a19')
+                                        : '#d1c5b4',
+                                    }}
+                                  >star</span>
+                                ))}
+                              </div>
+                            ) : null}
+                            <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">
+                              {isActionRequired ? 'Needs Follow-up' : 'Guest Review'}
+                            </h3>
+                          </div>
+                          <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639] bg-[#f4f3f1] px-3 py-1 rounded">
+                            Room {order.roomNumber}
+                          </span>
+                        </div>
+                        <p className="font-['Manrope'] text-[#4e4639] leading-relaxed text-sm mb-6 flex-grow">
+                          "{order.feedbackText || order.feedbackSummary || 'Guest submitted a rating without written comments.'}"
+                        </p>
+                        <div className="flex justify-between items-end border-t border-[#f4f3f1] pt-4 mt-auto">
+                          <div>
+                            {isActionRequired ? (
+                              <p className="font-['Manrope'] text-xs text-[#ba1a1a] font-medium">Action Required</p>
+                            ) : null}
+                            <p className="font-['Manrope'] text-xs text-[#4e4639]">
+                              {order.createdAt ? order.createdAt.toLocaleString() : '—'}
+                            </p>
+                          </div>
+                          {isActionRequired ? (
+                            <button className="text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest hover:bg-[#ffdad6] px-2 py-1 rounded transition-colors">
+                              Resolve
+                            </button>
+                          ) : (
+                            <button className="text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest hover:text-[#4e3700] transition-colors">
+                              Acknowledge
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             ) : null}
@@ -1353,59 +1375,92 @@ export default function HouseApp() {
             ══════════════════════════════════════════ */}
             {activeTab === 'revenue' ? (
               <ManagerOnly role={identity.role}>
-                <div className="space-y-6">
-                  <div className="bg-white rounded p-5 shadow-[0_8px_24px_rgba(26,28,27,0.03)] flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-10">
                     <div>
-                      <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">Daily revenue export</p>
-                      <p className="mt-1.5 font-['Manrope'] text-sm leading-6 text-[#4e4639]">
-                        Excel-compatible `.xls` export — open directly in Excel or Numbers.
-                      </p>
+                      <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight font-semibold">Revenue Analytics</h2>
+                      <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm">Daily and trend performance overview.</p>
                     </div>
-                    <div className="flex gap-3 flex-wrap">
+                    <div className="flex gap-3">
                       <input
                         className="bg-[#f4f3f1] border-none rounded px-4 py-2.5 font-['Manrope'] text-sm text-[#1a1c1b] outline-none"
                         type="date" value={selectedDate}
                         onChange={(e) => setSelectedDate(e.target.value)}
                       />
                       <button
-                        className="bg-[#1a1c1b] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-2.5 rounded hover:bg-[#1a1c1b]/90 transition-colors"
+                        className="flex items-center gap-2 text-[#775a19] font-['Manrope'] font-medium text-sm px-4 py-2.5 border border-[#d1c5b4]/30 rounded hover:bg-[#f4f3f1] transition-colors"
                         onClick={exportRevenue} type="button"
                       >
-                        Export to Excel
+                        <span className="material-symbols-outlined text-[18px]">download</span>
+                        Export Report
                       </button>
                     </div>
                   </div>
 
-                  <div className="grid gap-4 md:grid-cols-3">
-                    {[
-                      { label: 'Revenue', value: formatIdr(revenueSummary.kpi.revenue) },
-                      { label: 'Completed Orders', value: revenueSummary.kpi.completedOrders },
-                      { label: 'Cancelled Orders', value: revenueSummary.kpi.cancelledOrders },
-                    ].map((kpi) => (
-                      <div key={kpi.label} className="bg-white rounded p-5 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
-                        <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.18em] text-[#4e4639] font-semibold">{kpi.label}</p>
-                        <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b] mt-2">{kpi.value}</p>
+                  {/* KPI Grid */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
+                    <div className="bg-white rounded-lg p-8 shadow-[0_8px_24px_rgba(26,28,27,0.03)] relative overflow-hidden group">
+                      <div className="absolute -right-8 -top-8 w-32 h-32 bg-[#c5a059]/10 rounded-full blur-2xl group-hover:bg-[#c5a059]/20 transition-all" />
+                      <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Total Revenue</p>
+                      <h3 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] mb-4 tracking-tight">{formatIdr(revenueSummary.kpi.revenue)}</h3>
+                      <div className="flex items-center gap-2 text-sm">
+                        <span className="material-symbols-outlined text-[#775a19] text-sm">trending_up</span>
+                        <span className="font-['Manrope'] text-xs text-[#5f5e5e]">Selected date</span>
                       </div>
-                    ))}
+                    </div>
+                    <div className="bg-[#f4f3f1] rounded-lg p-8 relative overflow-hidden border border-[#e9e8e6]/30">
+                      <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Completed Orders</p>
+                      <h3 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] mb-4 tracking-tight">{revenueSummary.kpi.completedOrders}</h3>
+                      <div className="flex items-center gap-2 text-sm">
+                        <span className="material-symbols-outlined text-[#775a19] text-sm">check_circle</span>
+                        <span className="font-['Manrope'] text-xs text-[#5f5e5e]">Fulfilled</span>
+                      </div>
+                    </div>
+                    <div className="bg-[#f4f3f1] rounded-lg p-8 relative overflow-hidden border border-[#e9e8e6]/30">
+                      <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Cancelled Orders</p>
+                      <h3 className="font-['Noto_Serif'] text-4xl text-[#ba1a1a] mb-4 tracking-tight">{revenueSummary.kpi.cancelledOrders}</h3>
+                      <div className="flex items-center gap-2 text-sm">
+                        <span className="material-symbols-outlined text-[#ba1a1a] text-sm">cancel</span>
+                        <span className="font-['Manrope'] text-xs text-[#5f5e5e]">Cancelled</span>
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="bg-white rounded p-5 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
-                    <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b] mb-4">Revenue Rows</h3>
-                    <div className="space-y-2">
+                  {/* Revenue rows */}
+                  <div className="bg-white rounded-xl p-8 mb-8 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                    <div className="flex justify-between items-center mb-6 border-b border-[#f4f3f1] pb-4">
+                      <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Top Performing Orders</h3>
+                      <span className="font-['Manrope'] text-xs text-[#5f5e5e]">{revenueSummary.rows.length} entries</span>
+                    </div>
+                    <div className="flex flex-col gap-3">
                       {revenueSummary.rows.map((row) => (
-                        <div key={row.id} className="grid gap-3 bg-[#f4f3f1] px-4 py-3 rounded font-['Manrope'] text-sm text-[#4e4639] md:grid-cols-4">
-                          <p><span className="text-[#1a1c1b] font-medium">Order: </span>{row.id.slice(0, 8)}…</p>
-                          <p><span className="text-[#1a1c1b] font-medium">Room: </span>{row.roomNumber}</p>
-                          <p><span className="text-[#1a1c1b] font-medium">Payment: </span>{row.paymentMethod}</p>
-                          <p><span className="text-[#775a19] font-semibold">{formatIdr(row.total)}</span></p>
+                        <div key={row.id} className="flex items-center justify-between p-4 bg-[#f4f3f1] rounded-lg hover:bg-[#efeeec] transition-colors group cursor-pointer">
+                          <div className="flex items-center gap-4">
+                            <div className="w-12 h-12 rounded overflow-hidden bg-[#e9e8e6] flex items-center justify-center">
+                              <span className="material-symbols-outlined text-[#d1c5b4] text-[24px]">receipt</span>
+                            </div>
+                            <div>
+                              <p className="font-['Manrope'] font-medium text-[#1a1c1b] text-sm">Room {row.roomNumber}</p>
+                              <p className="font-['Manrope'] text-xs text-[#5f5e5e]">{row.paymentMethod} · Order {row.id.slice(0, 8)}…</p>
+                            </div>
+                          </div>
+                          <p className="font-['Noto_Serif'] text-lg text-[#775a19]">{formatIdr(row.total)}</p>
                         </div>
                       ))}
                       {revenueSummary.rows.length === 0 ? (
-                        <div className="bg-[#f4f3f1] rounded p-6 font-['Manrope'] text-sm text-[#4e4639] text-center">
-                          No completed revenue rows for the selected date.
+                        <div className="rounded-lg p-8 text-center">
+                          <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">payments</span>
+                          <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No completed revenue rows for the selected date.</p>
                         </div>
                       ) : null}
                     </div>
+                  </div>
+
+                  <div className="bg-[#f4f3f1] p-6 rounded-lg border border-[#e9e8e6]/30">
+                    <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Insight</p>
+                    <p className="font-['Manrope'] text-sm text-[#4e4639] leading-relaxed">
+                      Review completed orders by date to track revenue trends and identify peak service windows. Export to Excel for deeper analysis in Numbers or Excel.
+                    </p>
                   </div>
                 </div>
               </ManagerOnly>
@@ -1415,91 +1470,91 @@ export default function HouseApp() {
                 SHIFT HANDOVER NOTES
             ══════════════════════════════════════════ */}
             {activeTab === 'handover' ? (
-              <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
-                {/* Compose note */}
-                <div className="bg-white rounded p-6 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
-                  <div className="flex items-center gap-3 mb-5">
-                    <BookOpen className="h-5 w-5 text-[#775a19]" />
-                    <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Leave a Note</h3>
-                  </div>
-
-                  <div className="space-y-4">
-                    <div>
-                      <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">Shift</p>
-                      <div className="flex gap-2 flex-wrap">
-                        {(['morning', 'afternoon', 'night'] as ShiftName[]).map((s) => (
-                          <button
-                            key={s}
-                            className={`font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-3 py-2 rounded transition-colors ${
-                              activeShift === s
-                                ? 'bg-[#1a1c1b] text-white'
-                                : 'border border-[#d1c5b4]/50 text-[#4e4639] hover:bg-[#f4f3f1]'
-                            }`}
-                            onClick={() => setActiveShift(s)} type="button"
-                          >
-                            {s}
-                          </button>
-                        ))}
-                      </div>
-                      <p className="mt-2 font-['Manrope'] text-xs text-[#4e4639]">{SHIFT_LABELS[activeShift]}</p>
-                    </div>
-
-                    <div>
-                      <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">Note</p>
-                      <textarea
-                        className="w-full bg-[#f4f3f1] border-none rounded px-4 py-3 font-['Manrope'] text-sm text-[#1a1c1b] outline-none resize-none min-h-[140px] placeholder:text-[#4e4639]/50"
-                        placeholder="e.g. Suite 402 guest requires dairy-free options. Fryer #2 is under maintenance until 18:00."
-                        value={handoverDraft}
-                        onChange={(e) => setHandoverDraft(e.target.value)}
-                      />
-                    </div>
-
-                    <button
-                      className="w-full bg-[#775a19] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold py-3 rounded hover:bg-[#775a19]/90 transition-colors shadow-[0_4px_14px_rgba(119,90,25,0.2)] disabled:opacity-50"
-                      disabled={!handoverDraft.trim() || isSavingNote}
-                      onClick={saveHandoverNote} type="button"
-                    >
-                      {isSavingNote ? 'Saving…' : 'Post Note'}
-                    </button>
-                  </div>
+              <div>
+                <div className="mb-10">
+                  <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight">Handover Notes</h2>
+                  <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm">Leave notes for the incoming shift to ensure service continuity.</p>
                 </div>
-
-                {/* Notes per shift */}
-                <div className="space-y-4">
-                  {(['morning', 'afternoon', 'night'] as ShiftName[]).map((s) => {
-                    const notes = shiftNotesByShift[s];
-                    return (
-                      <div key={s} className="bg-white rounded p-5 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
-                        <div className="flex items-center justify-between mb-4">
-                          <div>
-                            <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">{s}</p>
-                            <p className="font-['Manrope'] text-xs text-[#4e4639]/70 mt-0.5">{SHIFT_LABELS[s]}</p>
-                          </div>
-                          <span className="font-['Manrope'] text-[10px] uppercase tracking-widest text-[#4e4639]">
-                            {notes.length} {notes.length === 1 ? 'note' : 'notes'}
-                          </span>
+                <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+                  {/* Compose */}
+                  <div className="bg-white rounded-lg p-6 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                    <div className="flex items-center gap-3 mb-5">
+                      <span className="material-symbols-outlined text-[#775a19] text-[22px]">description</span>
+                      <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Leave a Note</h3>
+                    </div>
+                    <div className="space-y-4">
+                      <div>
+                        <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">Shift</p>
+                        <div className="flex gap-2 flex-wrap">
+                          {(['morning', 'afternoon', 'night'] as ShiftName[]).map((s) => (
+                            <button
+                              key={s}
+                              className={`font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-3 py-2 rounded transition-colors ${
+                                activeShift === s ? 'bg-[#1a1c1b] text-white' : 'border border-[#d1c5b4]/50 text-[#4e4639] hover:bg-[#f4f3f1]'
+                              }`}
+                              onClick={() => setActiveShift(s)} type="button"
+                            >
+                              {s}
+                            </button>
+                          ))}
                         </div>
-
-                        {notes.length === 0 ? (
-                          <p className="font-['Manrope'] text-sm text-[#4e4639]/60 italic">No notes for this shift yet.</p>
-                        ) : (
-                          <div className="space-y-3">
-                            {notes.slice(0, 5).map((note) => (
-                              <div key={note.id} className="bg-[#f4f3f1] rounded p-4">
-                                <p className="font-['Manrope'] text-sm text-[#1a1c1b] leading-6">{note.note}</p>
-                                <div className="mt-2 flex items-center justify-between">
-                                  <span className="font-['Manrope'] text-[10px] text-[#4e4639] font-semibold">{note.authorName}</span>
-                                  <span className="font-['Manrope'] text-[10px] text-[#4e4639]/70">
-                                    {note.createdAt ? note.createdAt.toLocaleString() : '—'}
-                                  </span>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        )}
+                        <p className="mt-2 font-['Manrope'] text-xs text-[#4e4639]">{SHIFT_LABELS[activeShift]}</p>
                       </div>
-                    );
-                  })}
+                      <div>
+                        <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">Note</p>
+                        <textarea
+                          className="w-full bg-[#f4f3f1] border-none rounded px-4 py-3 font-['Manrope'] text-sm text-[#1a1c1b] outline-none resize-none min-h-[140px] placeholder:text-[#4e4639]/50"
+                          placeholder="e.g. Suite 402 guest requires dairy-free options. Fryer #2 under maintenance until 18:00."
+                          value={handoverDraft}
+                          onChange={(e) => setHandoverDraft(e.target.value)}
+                        />
+                      </div>
+                      <button
+                        className="w-full bg-[#775a19] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold py-3 rounded hover:bg-[#775a19]/90 transition-colors shadow-[0_4px_14px_rgba(119,90,25,0.2)] disabled:opacity-50"
+                        disabled={!handoverDraft.trim() || isSavingNote}
+                        onClick={saveHandoverNote} type="button"
+                      >
+                        {isSavingNote ? 'Saving…' : 'Post Note'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Notes per shift */}
+                  <div className="space-y-4">
+                    {(['morning', 'afternoon', 'night'] as ShiftName[]).map((s) => {
+                      const notes = shiftNotesByShift[s];
+                      return (
+                        <div key={s} className="bg-white rounded-lg p-5 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                          <div className="flex items-center justify-between mb-4">
+                            <div>
+                              <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold capitalize">{s}</p>
+                              <p className="font-['Manrope'] text-xs text-[#4e4639]/70 mt-0.5">{SHIFT_LABELS[s]}</p>
+                            </div>
+                            <span className="font-['Manrope'] text-[10px] uppercase tracking-widest text-[#4e4639]">
+                              {notes.length} {notes.length === 1 ? 'note' : 'notes'}
+                            </span>
+                          </div>
+                          {notes.length === 0 ? (
+                            <p className="font-['Manrope'] text-sm text-[#4e4639]/60 italic">No notes for this shift yet.</p>
+                          ) : (
+                            <div className="space-y-3">
+                              {notes.slice(0, 5).map((note) => (
+                                <div key={note.id} className="bg-[#f4f3f1] rounded p-4">
+                                  <p className="font-['Manrope'] text-sm text-[#1a1c1b] leading-6">{note.note}</p>
+                                  <div className="mt-2 flex items-center justify-between">
+                                    <span className="font-['Manrope'] text-[10px] text-[#4e4639] font-semibold">{note.authorName}</span>
+                                    <span className="font-['Manrope'] text-[10px] text-[#4e4639]/70">
+                                      {note.createdAt ? note.createdAt.toLocaleString() : '—'}
+                                    </span>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             ) : null}
@@ -1508,96 +1563,118 @@ export default function HouseApp() {
                 SETTINGS
             ══════════════════════════════════════════ */}
             {activeTab === 'settings' ? (
-              <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-                <div className="bg-white rounded p-6 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
-                  <div className="flex items-center gap-3 mb-6">
-                    <QrCode className="h-5 w-5 text-[#775a19]" />
-                    <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Guest QR Access</h3>
-                  </div>
-
-                  <div className="grid gap-5 md:grid-cols-2">
-                    <div className="space-y-5">
-                      {[
-                        { label: 'Hotel ID', value: hotelId, onChange: setHotelId, placeholder: '' },
-                        { label: 'Stay ID', value: stayId, onChange: setStayId, placeholder: 'stay-1204-demo' },
-                        { label: 'Room Number', value: roomNumber, onChange: setRoomNumber, placeholder: '1204' },
-                        { label: 'Expiry (minutes)', value: expiresInMinutes, onChange: setExpiresInMinutes, placeholder: '720' },
-                      ].map((field) => (
-                        <UnderlineInput
-                          key={field.label} id={field.label} label={field.label}
-                          value={field.value} placeholder={field.placeholder} onChange={field.onChange}
-                        />
-                      ))}
-
-                      <div className="flex flex-wrap gap-3 pt-2">
-                        <button
-                          className="bg-[#1a1c1b] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#1a1c1b]/90 transition-colors disabled:opacity-50"
-                          disabled={isGeneratingToken} onClick={handleGenerateQr} type="button"
-                        >
-                          {isGeneratingToken ? 'Generating…' : 'Generate QR'}
-                        </button>
-                        {tokenResult?.qrUrl ? (
-                          <button
-                            className="flex items-center gap-2 border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#f4f3f1] transition-colors"
-                            onClick={copyTokenUrl} type="button"
-                          >
-                            <Copy className="h-3.5 w-3.5" />
-                            Copy URL
-                          </button>
-                        ) : null}
-                      </div>
-                      {tokenStatus ? <p className="font-['Manrope'] text-xs text-[#4e4639]">{tokenStatus}</p> : null}
-                    </div>
-
-                    <div className="bg-[#f4f3f1] rounded p-5">
-                      <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-4">Print Pack</p>
-                      {tokenResult ? (
-                        <div className="space-y-4 font-['Manrope'] text-sm">
-                          {[
-                            { label: 'Guest URL', value: tokenResult.qrUrl, mono: true },
-                            { label: 'Raw Token', value: tokenResult.rawToken, mono: true },
-                            { label: 'Expires At', value: new Date(tokenResult.expiresAt).toLocaleString(), mono: false },
-                          ].map((item) => (
-                            <div key={item.label}>
-                              <p className="font-['Manrope'] text-[10px] uppercase tracking-widest text-[#4e4639]">{item.label}</p>
-                              <p className={`mt-1.5 bg-white rounded px-3 py-2 text-xs text-[#1a1c1b] leading-5 break-all ${item.mono ? 'font-mono' : ''}`}>
-                                {item.value}
-                              </p>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="font-['Manrope'] text-sm leading-6 text-[#4e4639]">
-                          Generate a guest access link for the front-office print workflow.
-                        </p>
-                      )}
-                    </div>
-                  </div>
+              <div>
+                <div className="mb-10">
+                  <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight">Settings</h2>
+                  <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm">Manage guest access, account details, and system configuration.</p>
                 </div>
-
-                <div className="space-y-4">
-                  <div className="bg-white rounded p-6 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
-                    <div className="flex items-center gap-3 mb-4">
-                      <UserCircle2 className="h-5 w-5 text-[#775a19]" />
-                      <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Active Operator</h3>
+                <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+                  {/* QR Access */}
+                  <div className="bg-white rounded-lg p-8 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                    <div className="flex items-center gap-3 mb-7">
+                      <span className="material-symbols-outlined text-[#775a19] text-[22px]">qr_code_2</span>
+                      <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Guest QR Access</h3>
                     </div>
-                    <div className="bg-[#f4f3f1] rounded p-4 font-['Manrope'] text-sm space-y-2">
-                      <p className="text-[#4e4639]">Name: <span className="font-semibold text-[#1a1c1b]">{identity.name}</span></p>
-                      <p className="text-[#4e4639]">Role: <span className="font-semibold text-[#1a1c1b]">{identity.role}</span></p>
-                      <p className="text-[#4e4639]">Credential: <span className="font-semibold text-[#1a1c1b]">{identity.username}</span></p>
+                    <div className="grid gap-6 md:grid-cols-2">
+                      <div className="space-y-5">
+                        {[
+                          { label: 'Hotel ID', value: hotelId, onChange: setHotelId, placeholder: '' },
+                          { label: 'Stay ID', value: stayId, onChange: setStayId, placeholder: 'stay-1204-demo' },
+                          { label: 'Room Number', value: roomNumber, onChange: setRoomNumber, placeholder: '1204' },
+                          { label: 'Expiry (minutes)', value: expiresInMinutes, onChange: setExpiresInMinutes, placeholder: '720' },
+                        ].map((field) => (
+                          <div key={field.label}>
+                            <label className="block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-1">{field.label}</label>
+                            <input
+                              type="text" value={field.value} placeholder={field.placeholder}
+                              onChange={(e) => field.onChange(e.target.value)}
+                              className="w-full bg-[#e9e8e6] border-b-2 border-transparent focus:border-b-[#775a19] rounded-sm px-3 py-2.5 font-['Manrope'] text-sm text-[#1a1c1b] outline-none placeholder:text-[#4e4639]/50 transition-colors"
+                            />
+                          </div>
+                        ))}
+                        <div className="flex flex-wrap gap-3 pt-2">
+                          <button
+                            className="bg-[#1a1c1b] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#1a1c1b]/90 transition-colors disabled:opacity-50"
+                            disabled={isGeneratingToken} onClick={handleGenerateQr} type="button"
+                          >
+                            {isGeneratingToken ? 'Generating…' : 'Generate QR'}
+                          </button>
+                          {tokenResult?.qrUrl ? (
+                            <button
+                              className="flex items-center gap-2 border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#f4f3f1] transition-colors"
+                              onClick={copyTokenUrl} type="button"
+                            >
+                              <span className="material-symbols-outlined text-[16px]">content_copy</span>
+                              Copy URL
+                            </button>
+                          ) : null}
+                        </div>
+                        {tokenStatus ? <p className="font-['Manrope'] text-xs text-[#4e4639]">{tokenStatus}</p> : null}
+                      </div>
+                      <div className="bg-[#f4f3f1] rounded p-5">
+                        <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-4">Print Pack</p>
+                        {tokenResult ? (
+                          <div className="space-y-4 font-['Manrope'] text-sm">
+                            {[
+                              { label: 'Guest URL', value: tokenResult.qrUrl, mono: true },
+                              { label: 'Raw Token', value: tokenResult.rawToken, mono: true },
+                              { label: 'Expires At', value: new Date(tokenResult.expiresAt).toLocaleString(), mono: false },
+                            ].map((item) => (
+                              <div key={item.label}>
+                                <p className="font-['Manrope'] text-[10px] uppercase tracking-widest text-[#4e4639]">{item.label}</p>
+                                <p className={`mt-1.5 bg-white rounded px-3 py-2 text-xs text-[#1a1c1b] leading-5 break-all ${item.mono ? 'font-mono' : ''}`}>
+                                  {item.value}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="font-['Manrope'] text-sm leading-6 text-[#4e4639]">
+                            Generate a guest access link for the front-office print workflow.
+                          </p>
+                        )}
+                      </div>
                     </div>
                   </div>
 
-                  <div className="bg-white rounded p-6 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
-                    <div className="flex items-center gap-3 mb-4">
-                      <Sparkles className="h-5 w-5 text-[#775a19]" />
-                      <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Audit Trail</h3>
+                  {/* Right column */}
+                  <div className="space-y-5">
+                    <div className="bg-white rounded-lg p-7 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                      <div className="flex items-center gap-3 mb-5">
+                        <span className="material-symbols-outlined text-[#775a19] text-[22px]">manage_accounts</span>
+                        <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Active Operator</h3>
+                      </div>
+                      <div className="space-y-0">
+                        {[
+                          { label: 'Name', value: identity.name },
+                          { label: 'Role', value: identity.role },
+                          { label: 'Credential', value: identity.username },
+                        ].map(({ label, value }) => (
+                          <div key={label} className="flex justify-between items-center py-3 border-b border-[#f4f3f1] last:border-0">
+                            <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639] font-semibold">{label}</span>
+                            <span className="font-['Manrope'] text-sm text-[#1a1c1b] font-medium">{value}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <button
+                        className="mt-5 w-full flex items-center justify-center gap-2 border border-[#d1c5b4]/50 text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest font-semibold py-3 rounded hover:bg-[#f4f3f1] transition-colors"
+                        onClick={handleLogout} type="button"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">logout</span>
+                        Sign Out
+                      </button>
                     </div>
-                    <p className="font-['Manrope'] text-sm text-[#4e4639] leading-6">
-                      Every write action (order status changes, menu edits, availability toggles, guest session revokes, shift notes) is logged to the{' '}
-                      <code className="bg-[#f4f3f1] px-1.5 py-0.5 rounded text-xs text-[#1a1c1b]">auditLog</code>
-                      {' '}collection in Firestore with operator name, role, and timestamp.
-                    </p>
+                    <div className="bg-white rounded-lg p-7 shadow-[0_8px_24px_rgba(26,28,27,0.03)]">
+                      <div className="flex items-center gap-3 mb-5">
+                        <span className="material-symbols-outlined text-[#775a19] text-[22px]">policy</span>
+                        <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Audit Trail</h3>
+                      </div>
+                      <p className="font-['Manrope'] text-sm text-[#4e4639] leading-6">
+                        Every write action (status changes, menu edits, availability toggles, guest session revokes, shift notes) is logged to the{' '}
+                        <code className="bg-[#f4f3f1] px-1.5 py-0.5 rounded text-xs text-[#1a1c1b]">auditLog</code>
+                        {' '}collection in Firestore with operator name, role, and timestamp.
+                      </p>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1625,7 +1702,6 @@ export default function HouseApp() {
                 Close
               </button>
             </div>
-
             <div className="p-6 grid gap-5 md:grid-cols-2">
               {([
                 { label: 'Item Name', key: 'name' as const },
@@ -1639,18 +1715,14 @@ export default function HouseApp() {
                   onChange={(v) => setEditingProduct((c) => c ? { ...c, [field.key]: v } : c)}
                 />
               ))}
-
               <div className="md:col-span-2">
-                <label className="block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">
-                  Description
-                </label>
+                <label className="block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">Description</label>
                 <textarea
                   className="w-full bg-[#f4f3f1] border-none rounded px-4 py-3 font-['Manrope'] text-sm text-[#1a1c1b] outline-none resize-none min-h-[100px]"
                   value={editingProduct.description}
                   onChange={(e) => setEditingProduct((c) => c ? { ...c, description: e.target.value } : c)}
                 />
               </div>
-
               <div className="md:col-span-2">
                 <UnderlineInput
                   id="unavailableReason" label="Unavailable Reason"
@@ -1659,7 +1731,6 @@ export default function HouseApp() {
                   onChange={(v) => setEditingProduct((c) => c ? { ...c, unavailableReason: v } : c)}
                 />
               </div>
-
               <label className="md:col-span-2 flex items-center gap-3 bg-[#f4f3f1] px-4 py-3 rounded font-['Manrope'] text-sm text-[#1a1c1b] cursor-pointer">
                 <input
                   checked={editingProduct.isAvailable}
@@ -1669,7 +1740,6 @@ export default function HouseApp() {
                 Ready for guest ordering
               </label>
             </div>
-
             <div className="px-6 pb-6 flex flex-wrap gap-3">
               <button
                 className="bg-[#775a19] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#775a19]/90 transition-colors shadow-[0_4px_14px_rgba(119,90,25,0.2)]"
