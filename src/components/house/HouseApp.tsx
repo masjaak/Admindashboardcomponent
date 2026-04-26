@@ -170,8 +170,8 @@ const TAB_SEARCH_PLACEHOLDERS: Record<AdminTab, string> = {
   settings: 'Search settings...',
 };
 
-const ELEVATED_PANEL_CLASS = 'rounded-lg bg-white border border-[#e7dfd3]/60 shadow-[0_12px_32px_rgba(26,28,27,0.04)]';
-const TONAL_PANEL_CLASS = 'rounded-lg bg-[#f4f3f1] border border-[#ebe2d6]/60 shadow-[0_8px_24px_rgba(26,28,27,0.03)]';
+const ELEVATED_PANEL_CLASS = 'rounded-lg bg-white shadow-[0_10px_30px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/20';
+const TONAL_PANEL_CLASS = 'rounded-lg bg-[#f4f3f1] border border-[#d1c5b4]/20';
 
 function normalizeRole(role: unknown): AdminRole {
   return role === 'staff' ? 'staff' : 'manager';
@@ -1424,21 +1424,14 @@ export default function HouseApp() {
       <div className="flex min-h-screen">
 
         {/* ── Sidebar ── */}
-        <aside className="hidden lg:flex fixed left-0 top-0 h-full w-[17rem] flex-col bg-[#f4f3f1]/92 py-8 z-50 backdrop-blur-sm">
-          <div className="px-8 mb-10">
-            <div className="flex items-center gap-4">
-              <div className="h-12 w-12 overflow-hidden rounded-full bg-[#e3e2e0] shadow-[0_12px_24px_rgba(26,28,27,0.08)] ring-1 ring-white/70">
-                <img src={BRAND_LOGO_URL} alt="Atelier Meridian logo" className="h-full w-full object-cover" />
-              </div>
-              <div>
-                <h1 className="font-['Noto_Serif'] text-[2rem] leading-none tracking-[-0.03em] text-[#7d2f12]">Atelier Meridian</h1>
-                <p className="mt-1 font-['Manrope'] text-sm tracking-wide text-[#4e4639]">In-Room Dining Admin</p>
-              </div>
-            </div>
+        <aside className="hidden lg:flex fixed left-0 top-0 h-full w-64 flex-col bg-stone-100 py-10 z-50">
+          <div className="px-8 mb-12">
+            <h1 className="font-['Noto_Serif'] text-lg font-bold text-amber-900">Atelier Meridian</h1>
+            <p className="mt-1 font-['Manrope'] font-medium text-sm tracking-wide text-stone-500">In-Room Dining Admin</p>
           </div>
 
           <nav className="flex-1 overflow-y-auto">
-            <ul className="space-y-2 pr-3">
+            <ul className="space-y-2">
               {navItems.map(({ id, label, icon, badge }) => {
                 const isActive = activeTab === id;
                 return (
@@ -1446,15 +1439,15 @@ export default function HouseApp() {
                     <button
                       className={`flex w-full items-center justify-between py-4 pl-8 pr-5 text-left transition-all duration-200 font-['Manrope'] text-sm font-medium tracking-wide ${
                         isActive
-                          ? 'bg-white text-[#8b300f] rounded-r-2xl rounded-l-none font-bold shadow-[0_18px_36px_rgba(26,28,27,0.07)]'
-                          : 'text-[#4e4639] hover:bg-white/55 rounded-r-2xl'
+                          ? 'bg-white text-amber-900 rounded-l-full font-bold'
+                          : 'text-stone-600 hover:bg-white/50'
                       }`}
                       onClick={() => setActiveTab(id)}
                       type="button"
                     >
                       <span className="flex items-center gap-4">
                         <span
-                          className={`material-symbols-outlined text-[20px] ${isActive ? 'text-[#a44615]' : 'text-[#a44615]'}`}
+                          className="material-symbols-outlined text-[20px]"
                           style={{ fontVariationSettings: isActive ? "'FILL' 1" : "'FILL' 0" }}
                         >
                           {icon}
@@ -1475,25 +1468,42 @@ export default function HouseApp() {
 
           <div className="px-8 mt-auto">
             <button
-              className="w-full py-3 px-4 rounded-[14px] border border-[#e2d8cb] bg-white/70 text-[#8d6214] font-['Manrope'] font-medium text-sm hover:bg-white transition-colors flex items-center justify-center gap-2"
+              className="w-full py-3 px-4 rounded border border-[#d1c5b4]/30 text-[#775a19] font-['Manrope'] font-medium text-sm hover:bg-[#f4f3f1] transition-colors flex items-center justify-center gap-2"
               type="button"
             >
-              <span className="material-symbols-outlined text-[18px]">support_agent</span>
+              <span className="material-symbols-outlined text-[18px]">headset_mic</span>
               Support Concierge
             </button>
           </div>
         </aside>
 
         {/* ── Main ── */}
-        <div className="flex-1 lg:ml-[17rem] flex flex-col">
+        <div className="flex-1 lg:ml-64 flex flex-col">
 
           {/* Top bar */}
-          <header className="fixed top-0 right-0 z-40 bg-[#faf9f7]/82 backdrop-blur-xl shadow-[0_20px_40px_rgba(26,28,27,0.06)] w-full lg:w-[calc(100%-17rem)] px-6 lg:px-12 py-5 flex justify-between items-center">
-            <div className="font-['Noto_Serif'] text-[1.7rem] leading-none tracking-[-0.03em] text-[#7d2f12]">
-              Atelier Meridian
+          <header className="fixed top-0 right-0 z-40 bg-stone-50/80 backdrop-blur-md shadow-[0_20px_40px_rgba(26,28,27,0.06)] w-full md:w-[calc(100%-16rem)] px-8 py-6 flex justify-between items-center">
+            <div className="flex-1">
+              {activeTab === 'revenue' ? (
+                <h2 className="font-['Noto_Serif'] font-light tracking-tight text-[#1a1c1b] text-2xl hidden md:block">Revenue Analytics</h2>
+              ) : null}
+              {activeTab === 'menu' ? (
+                <div className="relative w-64 md:w-96 hidden md:block">
+                  <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[#4e4639] text-[18px]">search</span>
+                  <input
+                    type="text"
+                    value={shellSearch}
+                    onChange={(e) => setShellSearch(e.target.value)}
+                    placeholder={TAB_SEARCH_PLACEHOLDERS[activeTab]}
+                    className="w-full pl-10 pr-4 py-2 bg-[#e9e8e6] border-none rounded-full font-['Manrope'] text-sm text-[#1a1c1b] outline-none focus:bg-white focus:ring-1 focus:ring-[#775a19] transition-colors"
+                  />
+                </div>
+              ) : null}
+              {activeTab === 'settings' ? (
+                <div className="font-['Noto_Serif'] text-2xl tracking-tight text-amber-900 hidden md:block">Atelier Meridian</div>
+              ) : null}
             </div>
-            <div className="flex items-center gap-3 md:gap-5">
-              {activeTab === 'menu' || activeTab === 'settings' ? (
+            <div className="flex items-center gap-6">
+              {activeTab === 'settings' ? (
                 <div className="relative hidden md:block">
                   <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[#4e4639] text-[18px]">search</span>
                   <input
@@ -1501,26 +1511,20 @@ export default function HouseApp() {
                     value={shellSearch}
                     onChange={(e) => setShellSearch(e.target.value)}
                     placeholder={TAB_SEARCH_PLACEHOLDERS[activeTab]}
-                    className="w-64 rounded-2xl bg-[#e9e8e6]/92 pl-10 pr-4 py-2.5 font-['Manrope'] text-sm text-[#1a1c1b] outline-none placeholder:text-[#6c6457] focus:bg-white focus:ring-1 focus:ring-[#d8c7ac]"
+                    className="w-64 pl-10 pr-4 py-2 bg-[#e9e8e6] rounded-full font-['Manrope'] text-sm text-[#1a1c1b] outline-none focus:ring-1 focus:ring-[#775a19] focus:bg-white transition-colors border-none"
                   />
                 </div>
               ) : null}
-              {slaBreachedCount > 0 ? (
-                <div className="hidden md:flex items-center gap-1.5 text-[#ba1a1a]">
-                  <span className="material-symbols-outlined text-[20px]">warning</span>
-                  <span className="font-['Manrope'] text-xs font-semibold uppercase tracking-widest">{slaBreachedCount} SLA</span>
-                </div>
-              ) : null}
-              <button className="text-[#a44615] hover:text-[#8b300f] transition-colors" type="button">
+              <button className="text-amber-800 hover:text-amber-700 transition-colors duration-300 active:scale-95 transform" type="button">
                 <span className="material-symbols-outlined text-[24px]">notifications</span>
               </button>
-              <button className="text-[#a44615] hover:text-[#8b300f] transition-colors" type="button">
+              <button className="text-amber-800 hover:text-amber-700 transition-colors duration-300 active:scale-95 transform" type="button">
                 <span className="material-symbols-outlined text-[24px]">account_circle</span>
               </button>
             </div>
           </header>
 
-          <main className="flex-1 pt-28 px-6 lg:px-12 pb-24 max-w-[1240px] mx-auto w-full">
+          <main className="flex-1 pt-32 px-8 lg:px-12 pb-24 max-w-7xl mx-auto w-full">
 
             <div className="mb-8 lg:hidden overflow-x-auto">
               <div className="inline-flex min-w-max gap-2 rounded-full bg-white/78 p-1.5 shadow-[0_16px_34px_rgba(26,28,27,0.06)] ring-1 ring-[#efe8de]">
@@ -1572,27 +1576,27 @@ export default function HouseApp() {
                     <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight font-semibold">Live Orders</h2>
                     <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm tracking-wide">Currently monitoring active in-room dining requests.</p>
                   </div>
-                  <div className="flex gap-3">
-                    <button className="rounded-full bg-[#efe8dc] px-6 py-2.5 font-['Manrope'] text-sm font-semibold text-[#775a19] transition hover:bg-[#e4d6be]" type="button">
+                  <div className="flex gap-4">
+                    <button className="font-['Manrope'] text-sm font-semibold tracking-wide text-[#775a19] bg-[#c5a059]/20 px-6 py-2 rounded-full hover:bg-[#c5a059]/30 transition-colors" type="button">
                       Filter
                     </button>
-                    <button className="rounded-[14px] bg-[#775a19] px-5 py-2.5 font-['Manrope'] text-sm font-semibold text-white shadow-[0_8px_16px_rgba(119,90,25,0.15)] transition hover:bg-[#5d4201]" type="button">
+                    <button className="font-['Manrope'] text-sm font-semibold tracking-wide text-white bg-[#775a19] px-6 py-2 rounded shadow-sm hover:bg-[#775a19]/90 transition-colors" type="button">
                       Pause New Orders
                     </button>
                   </div>
                 </div>
 
                 {/* Stats grid */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
-                  <div className={`${ELEVATED_PANEL_CLASS} p-6`}>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+                  <div className="bg-white p-6 rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/10">
                     <p className="font-['Manrope'] text-xs tracking-widest text-[#5f5e5e] uppercase mb-1">Total Active</p>
                     <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{activeOrders.length}</p>
                   </div>
-                  <div className={`${ELEVATED_PANEL_CLASS} p-6`}>
+                  <div className="bg-white p-6 rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/10">
                     <p className="font-['Manrope'] text-xs tracking-widest text-[#5f5e5e] uppercase mb-1">Avg. Prep Time</p>
                     <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{averagePrepMinutes} <span className="font-['Manrope'] text-lg text-[#5f5e5e]">min</span></p>
                   </div>
-                  <div className={`${TONAL_PANEL_CLASS} p-6`}>
+                  <div className="bg-white p-6 rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/10">
                     <p className="font-['Manrope'] text-xs tracking-widest text-[#5f5e5e] uppercase mb-1">Delayed</p>
                     <p className="font-['Noto_Serif'] text-3xl text-[#ba1a1a]">{slaBreachedCount}</p>
                   </div>
@@ -1611,8 +1615,8 @@ export default function HouseApp() {
                       return (
                         <div
                           key={order.id}
-                          className={`overflow-hidden flex flex-col md:flex-row bg-white rounded-lg shadow-[0_12px_32px_rgba(26,28,27,0.04)] ${
-                            sla ? 'border-l-4 border-[#ba1a1a]' : 'border border-[#e7dfd3]/60'
+                          className={`overflow-hidden flex flex-col md:flex-row bg-white rounded shadow-[0_12px_32px_rgba(26,28,27,0.04)] ${
+                            sla ? 'border-l-4 border-[#ba1a1a]' : 'border border-[#d1c5b4]/10'
                           }`}
                         >
                           <div className="p-6 md:w-[26%] bg-[#f4f3f1]/50 flex flex-col justify-between">
@@ -1635,7 +1639,7 @@ export default function HouseApp() {
                             </div>
                           </div>
 
-                          <div className="p-6 flex-1 flex flex-col justify-between">
+                          <div className="p-6 flex-1 border-t md:border-t-0 md:border-l border-[#d1c5b4]/20 flex flex-col justify-between">
                             <ul className="space-y-3">
                               {order.items.map((item) => (
                                 <li key={item.id} className="flex justify-between items-start gap-6">
@@ -1647,7 +1651,7 @@ export default function HouseApp() {
                                 </li>
                               ))}
                             </ul>
-                            <div className="mt-6 flex flex-wrap justify-between items-center gap-3 border-t border-[#ece5db]/60 pt-4">
+                            <div className="mt-6 flex flex-wrap justify-between items-center gap-3 border-t border-[#d1c5b4]/10 pt-4">
                               <div className="flex items-center gap-3 flex-wrap">
                                 {sla ? (
                                   <div className="flex items-center gap-1.5">
@@ -1723,7 +1727,7 @@ export default function HouseApp() {
                     <p className="font-['Manrope'] text-[#4e4639] max-w-md text-sm">Manage the culinary portfolio for in-room dining. Adjust availability to reflect real-time kitchen capacity.</p>
                   </div>
                   <button
-                    className="bg-[#8b6418] text-white px-6 py-3 rounded-[14px] text-sm font-['Manrope'] font-medium tracking-wide hover:bg-[#775a19]/90 transition-all flex items-center gap-2 shadow-[0_14px_30px_rgba(119,90,25,0.18)] shrink-0"
+                    className="bg-[#775a19] text-white px-6 py-3 rounded text-sm font-['Manrope'] font-medium tracking-wide hover:bg-[#c5a059] hover:text-[#4e3700] transition-all flex items-center gap-2 shadow-[0_8px_16px_rgba(119,90,25,0.15)] shrink-0"
                     onClick={() => setEditingProduct(getEditorState())} type="button"
                   >
                     <span className="material-symbols-outlined text-[18px]">add</span>
@@ -2068,68 +2072,69 @@ export default function HouseApp() {
               <ManagerOnly role={identity.role}>
                 <div>
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-12">
-                    <div className="flex gap-2 rounded-full border border-[#e3ddd3] bg-[#f4f3f1] p-1">
+                    <div className="flex gap-2 bg-[#f4f3f1] p-1 rounded-full border border-[#e3e2e0]/50">
                       {(['daily', 'weekly', 'monthly'] as const).map((range) => (
                         <button
                           key={range}
                           type="button"
                           onClick={() => setRevenueRange(range)}
-                          className={`rounded-full px-6 py-2 font-['Manrope'] text-sm transition ${
-                            revenueRange === range ? 'bg-white text-[#775a19] shadow-sm' : 'text-[#5f5e5e]'
+                          className={`rounded-full px-6 py-2 font-['Manrope'] font-medium text-sm transition ${
+                            revenueRange === range ? 'bg-white text-[#775a19] shadow-sm' : 'text-[#5f5e5e] hover:bg-white/50'
                           }`}
                         >
                           {range[0].toUpperCase() + range.slice(1)}
                         </button>
                       ))}
                     </div>
-                    <div className="flex gap-3">
-                      <button
-                        className="flex items-center gap-2 text-[#775a19] font-['Manrope'] font-medium text-sm px-4 py-2.5 border border-[#d1c5b4]/30 rounded-[14px] hover:bg-[#f4f3f1] transition-colors"
-                        onClick={exportRevenue} type="button"
-                      >
-                        <span className="material-symbols-outlined text-[18px]">download</span>
-                        Export Report
-                      </button>
-                    </div>
+                    <button
+                      className="flex items-center gap-2 text-[#775a19] font-['Manrope'] font-medium text-sm px-4 py-2 border border-[#d1c5b4]/30 rounded hover:bg-[#f4f3f1] transition-colors"
+                      onClick={exportRevenue} type="button"
+                    >
+                      <span className="material-symbols-outlined text-[18px]">download</span>
+                      Export Report
+                    </button>
                   </div>
 
                   {/* KPI Grid */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
-                    <div className={`${ELEVATED_PANEL_CLASS} p-8 relative overflow-hidden group`}>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+                    <div className="bg-white rounded-lg p-8 shadow-[0_20px_40px_rgba(26,28,27,0.06)] relative overflow-hidden group">
                       <div className="absolute -right-8 -top-8 w-32 h-32 bg-[#c5a059]/10 rounded-full blur-2xl group-hover:bg-[#c5a059]/20 transition-all" />
                       <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Total Revenue</p>
                       <h3 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] mb-4 tracking-tight">{formatIdr(revenueOverview.revenue)}</h3>
                       <div className="flex items-center gap-2 text-sm">
-                        <span className={`material-symbols-outlined text-sm ${revenueOverview.revenueDelta >= 0 ? 'text-[#775a19]' : 'text-[#ba1a1a]'}`}>
+                        <span className={`material-symbols-outlined text-sm mr-1 ${revenueOverview.revenueDelta >= 0 ? 'text-[#775a19]' : 'text-[#ba1a1a]'}`}>
                           {revenueOverview.revenueDelta >= 0 ? 'trending_up' : 'trending_down'}
                         </span>
-                        <span className="font-['Manrope'] text-xs text-[#5f5e5e]">
-                          {`${revenueOverview.revenueDelta >= 0 ? '+' : ''}${revenueOverview.revenueDelta.toFixed(1)}% vs last period`}
+                        <span className={`font-['Manrope'] font-medium text-xs ${revenueOverview.revenueDelta >= 0 ? 'text-[#775a19]' : 'text-[#ba1a1a]'}`}>
+                          {`${revenueOverview.revenueDelta >= 0 ? '+' : ''}${revenueOverview.revenueDelta.toFixed(1)}%`}
                         </span>
+                        <span className="font-['Manrope'] text-xs text-[#5f5e5e]">vs last period</span>
                       </div>
                     </div>
-                    <div className={`${TONAL_PANEL_CLASS} p-8 relative overflow-hidden`}>
+                    <div className="bg-[#f4f3f1] rounded-lg p-8 relative overflow-hidden border border-[#e3e2e0]/30">
                       <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Average Order Value</p>
                       <h3 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] mb-4 tracking-tight">{formatIdr(revenueOverview.averageOrderValue)}</h3>
                       <div className="flex items-center gap-2 text-sm">
-                        <span className={`material-symbols-outlined text-sm ${revenueOverview.averageDelta >= 0 ? 'text-[#775a19]' : 'text-[#ba1a1a]'}`}>
+                        <span className={`material-symbols-outlined text-sm mr-1 ${revenueOverview.averageDelta >= 0 ? 'text-[#775a19]' : 'text-[#ba1a1a]'}`}>
                           {revenueOverview.averageDelta >= 0 ? 'trending_up' : 'trending_down'}
                         </span>
-                        <span className="font-['Manrope'] text-xs text-[#5f5e5e]">
-                          {`${revenueOverview.averageDelta >= 0 ? '+' : ''}${revenueOverview.averageDelta.toFixed(1)}% vs last period`}
+                        <span className={`font-['Manrope'] font-medium text-xs ${revenueOverview.averageDelta >= 0 ? 'text-[#775a19]' : 'text-[#ba1a1a]'}`}>
+                          {`${revenueOverview.averageDelta >= 0 ? '+' : ''}${revenueOverview.averageDelta.toFixed(1)}%`}
                         </span>
+                        <span className="font-['Manrope'] text-xs text-[#5f5e5e]">vs last period</span>
                       </div>
                     </div>
-                    <div className={`${TONAL_PANEL_CLASS} p-8 relative overflow-hidden`}>
+                    <div className="bg-[#f4f3f1] rounded-lg p-8 relative overflow-hidden border border-[#e3e2e0]/30">
                       <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Total Orders</p>
                       <h3 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] mb-4 tracking-tight">{revenueOverview.totalOrders}</h3>
                       <div className="flex items-center gap-2 text-sm">
-                        <span className={`material-symbols-outlined text-sm ${revenueOverview.ordersDelta >= 0 ? 'text-[#775a19]' : 'text-[#ba1a1a]'}`}>
+                        <span className={`material-symbols-outlined text-sm mr-1 ${revenueOverview.ordersDelta >= 0 ? 'text-[#775a19]' : 'text-[#ba1a1a]'}`}>
                           {revenueOverview.ordersDelta >= 0 ? 'trending_up' : 'trending_down'}
                         </span>
-                        <span className="font-['Manrope'] text-xs text-[#5f5e5e]">
-                          {`${revenueOverview.ordersDelta >= 0 ? '+' : ''}${revenueOverview.ordersDelta.toFixed(1)}% vs last period`}
+                        <span className={`font-['Manrope'] font-medium text-xs ${revenueOverview.ordersDelta >= 0 ? 'text-[#5f5e5e]' : 'text-[#ba1a1a]'}`}>
+                          {`${revenueOverview.ordersDelta >= 0 ? '+' : ''}${revenueOverview.ordersDelta.toFixed(1)}%`}
                         </span>
+                        <span className="font-['Manrope'] text-xs text-[#5f5e5e]">vs last period</span>
                       </div>
                     </div>
                   </div>
@@ -2345,12 +2350,12 @@ export default function HouseApp() {
                     <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight">General Settings</h2>
                     <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm">Configure core operational parameters for in-room dining.</p>
                   </div>
-                  <button className="rounded-[14px] bg-[#8b6418] px-6 py-3 font-['Manrope'] text-sm font-medium tracking-wide text-white shadow-[0_8px_16px_rgba(119,90,25,0.15)] transition hover:bg-[#775a19]" type="button">
+                  <button className="bg-[#775a19] text-white px-6 py-3 rounded shadow-[0_4px_14px_rgba(119,90,25,0.2)] hover:bg-[#775a19]/90 transition-colors font-['Manrope'] text-sm font-medium tracking-wide" type="button">
                     Save Changes
                   </button>
                 </div>
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 mb-12">
-                  <section className={`lg:col-span-8 ${ELEVATED_PANEL_CLASS} p-8`}>
+                  <section className="lg:col-span-8 bg-white p-8 rounded-lg outline outline-1 outline-[#d1c5b4]/20 shadow-[0_20px_40px_rgba(26,28,27,0.03)]">
                     <div className="mb-8 flex items-center gap-3 border-b border-[#f4f3f1] pb-4">
                       <span className="material-symbols-outlined text-[#c5a059]" style={{ fontVariationSettings: "'FILL' 1" }}>schedule</span>
                       <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Operating Hours</h3>
@@ -2371,50 +2376,55 @@ export default function HouseApp() {
                       ))}
                     </div>
                   </section>
-                  <section className={`lg:col-span-4 ${TONAL_PANEL_CLASS} p-8`}>
+                  <section className="lg:col-span-4 bg-[#f4f3f1] p-8 rounded-lg outline outline-1 outline-[#d1c5b4]/20 flex flex-col">
                     <div className="mb-8 flex items-center gap-3">
                       <span className="material-symbols-outlined text-[#775a19]" style={{ fontVariationSettings: "'FILL' 1" }}>account_balance</span>
                       <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Financials</h3>
                     </div>
-                    <div className="space-y-8">
+                    <div className="space-y-8 flex-1">
                       <div>
-                        <label className="mb-3 block font-['Manrope'] text-xs uppercase tracking-[0.18em] text-[#5f5e5e]">Base Tax Rate (%)</label>
-                        <input type="number" defaultValue="8.5" className="w-full border-b border-[#775a19] bg-[#e9e8e6] px-4 py-3 text-2xl text-[#1a1c1b] outline-none" />
+                        <label className="mb-3 block font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]">Base Tax Rate (%)</label>
+                        <input type="number" defaultValue="8.5" step="0.1" className="w-full bg-[#e3e2e0] border-none border-b border-transparent px-4 py-3 font-mono text-lg text-[#1a1c1b] outline-none focus:border-b focus:border-[#775a19] rounded-t transition-all" />
                       </div>
                       <div>
-                        <label className="mb-3 block font-['Manrope'] text-xs uppercase tracking-[0.18em] text-[#5f5e5e]">In-Room Dining Surcharge (%)</label>
-                        <input type="number" defaultValue="18.0" className="w-full border-b border-[#775a19] bg-[#e9e8e6] px-4 py-3 text-2xl text-[#1a1c1b] outline-none" />
-                        <p className="mt-2 text-sm text-[#5f5e5e]">Automatically applied to subtotal before tax.</p>
+                        <label className="mb-3 block font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]">In-Room Dining Surcharge (%)</label>
+                        <input type="number" defaultValue="18.0" step="0.1" className="w-full bg-[#e3e2e0] border-none border-b border-transparent px-4 py-3 font-mono text-lg text-[#1a1c1b] outline-none focus:border-b focus:border-[#775a19] rounded-t transition-all" />
+                        <p className="mt-2 font-['Manrope'] text-xs text-[#4e4639] opacity-75">Automatically applied to subtotal before tax.</p>
                       </div>
                     </div>
                   </section>
                 </div>
 
-                <section className={`${ELEVATED_PANEL_CLASS} mb-12 p-8`}>
-                  <div className="grid gap-8 lg:grid-cols-[0.9fr_1.1fr]">
-                    <div>
+                <section className="bg-white p-8 rounded-lg outline outline-1 outline-[#d1c5b4]/20 shadow-[0_20px_40px_rgba(26,28,27,0.03)] mb-12 mt-4">
+                  <div className="flex flex-col md:flex-row md:items-start gap-12">
+                    <div className="md:w-1/3">
                       <div className="mb-4 flex items-center gap-3">
                         <span className="material-symbols-outlined text-[#c5a059]" style={{ fontVariationSettings: "'FILL' 1" }}>notifications_active</span>
-                        <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Alert Preferences</h3>
+                        <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Alert Preferences</h3>
                       </div>
-                      <p className="max-w-sm font-['Manrope'] text-lg leading-8 text-[#4e4639]">
+                      <p className="font-['Manrope'] text-sm text-[#4e4639] leading-relaxed">
                         Manage how and when staff are notified of new orders, delays, or guest feedback.
                       </p>
                     </div>
-                    <div className="grid gap-5 md:grid-cols-2">
+                    <div className="md:w-2/3 grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-8">
                       {[
                         ['New Order Chime', 'Audible alert on kitchen tablets.', true],
                         ['VIP Guest Alert', 'SMS notification to duty manager.', true],
                         ['Delayed Order Warning', 'Alerts after 30 mins prep time.', true],
                         ['Daily Revenue Digest', 'Email sent at end of service.', false],
                       ].map(([title, copy, checked]) => (
-                        <label key={title} className="flex items-start justify-between gap-4 rounded-[18px] bg-[#f4f3f1] p-4">
+                        <div key={title as string} className="flex items-start justify-between">
                           <div>
-                            <p className="font-['Manrope'] text-lg font-medium text-[#1a1c1b]">{title}</p>
-                            <p className="mt-1 font-['Manrope'] text-sm text-[#5f5e5e]">{copy}</p>
+                            <p className="font-['Manrope'] font-medium text-[#1a1c1b]">{title as string}</p>
+                            <p className="font-['Manrope'] text-xs text-[#4e4639] mt-1">{copy as string}</p>
                           </div>
-                          <input type="checkbox" defaultChecked={Boolean(checked)} className="mt-1 h-5 w-5 accent-[#775a19]" />
-                        </label>
+                          <input
+                            type="checkbox"
+                            defaultChecked={Boolean(checked)}
+                            className="luxury-toggle mt-1"
+                            style={{ appearance: 'none', width: '2.5rem', height: '1.25rem', backgroundColor: Boolean(checked) ? '#c5a059' : '#e9e8e6', borderRadius: '9999px', position: 'relative', cursor: 'pointer', transition: 'background-color 0.3s ease', outline: 'none', flexShrink: 0 }}
+                          />
+                        </div>
                       ))}
                     </div>
                   </div>

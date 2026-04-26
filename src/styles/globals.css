@@ -210,3 +210,91 @@
 html {
   font-size: var(--font-size);
 }
+
+/* Quiet Luxury component styles (from Atelier Meridian design system) */
+.luxury-checkbox {
+  appearance: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 1px solid #d1c5b4;
+  border-radius: 0.125rem;
+  outline: none;
+  cursor: pointer;
+  position: relative;
+  background-color: #ffffff;
+  flex-shrink: 0;
+}
+
+.luxury-checkbox:checked {
+  background-color: #775a19;
+  border-color: #775a19;
+}
+
+.luxury-checkbox:checked::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 6px;
+  width: 5px;
+  height: 10px;
+  border: solid #ffffff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+.luxury-toggle {
+  appearance: none;
+  width: 2.5rem;
+  height: 1.25rem;
+  background-color: #e9e8e6;
+  border-radius: 9999px;
+  position: relative;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+  outline: none;
+  flex-shrink: 0;
+}
+
+.luxury-toggle::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 1rem;
+  height: 1rem;
+  background-color: #4e4639;
+  border-radius: 50%;
+  transition: transform 0.3s ease;
+}
+
+.luxury-toggle:checked {
+  background-color: #c5a059;
+}
+
+.luxury-toggle:checked::before {
+  transform: translateX(1.25rem);
+  background-color: #775a19;
+}
+
+.luxury-input {
+  width: 100%;
+  background-color: #e9e8e6;
+  border: none;
+  border-bottom: 1px solid transparent;
+  padding: 0.75rem 1rem;
+  border-radius: 0.125rem 0.125rem 0 0;
+  color: #1a1c1b;
+  font-family: 'Manrope', sans-serif;
+  transition: all 0.3s ease;
+}
+
+.luxury-input:focus {
+  outline: none;
+  background-color: #ffffff;
+  border-bottom-color: #775a19;
+}
+
+.luxury-input::placeholder {
+  color: #4e4639;
+  opacity: 0.6;
+}
