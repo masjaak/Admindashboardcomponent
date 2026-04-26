@@ -170,8 +170,8 @@ const TAB_SEARCH_PLACEHOLDERS: Record<AdminTab, string> = {
   settings: 'Search settings...',
 };
 
-const ELEVATED_PANEL_CLASS = 'rounded-[22px] bg-white/96 ring-1 ring-[#efe8de] shadow-[0_24px_55px_rgba(26,28,27,0.05)] backdrop-blur-sm';
-const TONAL_PANEL_CLASS = 'rounded-[22px] bg-[#f4f3f1]/96 ring-1 ring-[#ebe5dc] shadow-[0_20px_45px_rgba(26,28,27,0.04)]';
+const ELEVATED_PANEL_CLASS = 'rounded-lg bg-white border border-[#e7dfd3]/60 shadow-[0_12px_32px_rgba(26,28,27,0.04)]';
+const TONAL_PANEL_CLASS = 'rounded-lg bg-[#f4f3f1] border border-[#ebe2d6]/60 shadow-[0_8px_24px_rgba(26,28,27,0.03)]';
 
 function normalizeRole(role: unknown): AdminRole {
   return role === 'staff' ? 'staff' : 'manager';
@@ -1611,20 +1611,19 @@ export default function HouseApp() {
                       return (
                         <div
                           key={order.id}
-                          className={`${ELEVATED_PANEL_CLASS} overflow-hidden flex flex-col md:flex-row ${
-                            sla ? 'ring-[#e4bbb9] ring-2' : ''
+                          className={`overflow-hidden flex flex-col md:flex-row bg-white rounded-lg shadow-[0_12px_32px_rgba(26,28,27,0.04)] ${
+                            sla ? 'border-l-4 border-[#ba1a1a]' : 'border border-[#e7dfd3]/60'
                           }`}
                         >
-                          <div className={`w-full md:w-[6px] ${sla ? 'bg-[#ba1a1a]' : 'bg-[#efe8dc]'}`} />
-                          <div className="p-6 md:w-[24%] bg-[#f4f3f1]/88 flex flex-col justify-between">
+                          <div className="p-6 md:w-[26%] bg-[#f4f3f1]/50 flex flex-col justify-between">
                             <div>
                               <span className={`inline-block px-3 py-1 text-xs font-['Manrope'] tracking-wide uppercase rounded-sm mb-5 ${
                                 sla ? 'bg-[#ffdad6] text-[#93000a]' : STATUS_COLORS[order.status] || 'bg-[#e9e8e6] text-[#1a1c1b]'
                               }`}>
                                 {sla ? 'Delayed' : formatStatusLabel(order.status)}
                               </span>
-                              <h3 className="font-['Noto_Serif'] text-[2rem] leading-none text-[#1a1c1b]">Suite {order.roomNumber}</h3>
-                              <p className="font-['Manrope'] text-sm text-[#5f5e5e] mt-3">{order.lastName || 'Guest'}</p>
+                              <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Suite {order.roomNumber}</h3>
+                              <p className="font-['Manrope'] text-sm text-[#5f5e5e] mt-1">{order.lastName || 'Guest'}</p>
                             </div>
                             <div className="mt-10">
                               <p className="font-['Manrope'] text-[10px] text-[#5f5e5e] tracking-widest uppercase">Ordered</p>
@@ -1637,18 +1636,18 @@ export default function HouseApp() {
                           </div>
 
                           <div className="p-6 flex-1 flex flex-col justify-between">
-                            <ul className="space-y-5">
+                            <ul className="space-y-3">
                               {order.items.map((item) => (
                                 <li key={item.id} className="flex justify-between items-start gap-6">
                                   <div>
-                                    <p className="font-['Manrope'] text-[2rem] leading-none text-[#1a1c1b] md:text-[1.15rem]">{item.qty}x {item.name}</p>
-                                    {item.note ? <p className="font-['Manrope'] text-sm text-[#5f5e5e] mt-2">{item.note}</p> : null}
+                                    <p className="font-['Manrope'] font-medium text-[#1a1c1b]">{item.qty}x {item.name}</p>
+                                    {item.note ? <p className="font-['Manrope'] text-sm text-[#5f5e5e]">{item.note}</p> : null}
                                   </div>
                                   <span className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatIdr(item.qty * item.price)}</span>
                                 </li>
                               ))}
                             </ul>
-                            <div className="mt-8 flex flex-wrap justify-between items-center gap-3 bg-[#fcfbf9] px-6 py-5">
+                            <div className="mt-6 flex flex-wrap justify-between items-center gap-3 border-t border-[#ece5db]/60 pt-4">
                               <div className="flex items-center gap-3 flex-wrap">
                                 {sla ? (
                                   <div className="flex items-center gap-1.5">
@@ -1665,29 +1664,35 @@ export default function HouseApp() {
                               </div>
                               <div className="flex flex-wrap items-center gap-3 justify-end">
                                 <button
-                                  className="font-['Manrope'] text-sm text-[#775a19] px-3 py-2.5 rounded-[14px] hover:bg-[#f4f3f1] transition-colors"
+                                  className="font-['Manrope'] text-sm text-[#775a19] px-3 py-2.5 transition-colors hover:text-[#5d4201]"
                                   type="button"
                                 >
                                   Message Guest
                                 </button>
                                 {primaryAction ? (
                                   <button
-                                    className="rounded-[14px] bg-[#8b6418] px-5 py-2.5 font-['Manrope'] text-sm font-semibold text-white transition hover:bg-[#775a19]"
+                                    className={`px-4 py-2 rounded text-sm font-['Manrope'] font-medium transition ${
+                                      order.status === 'incoming'
+                                        ? 'border border-[#b58a35] text-[#8b6418] hover:bg-[#faf4e7]'
+                                        : 'bg-[#8b6418] text-white hover:bg-[#775a19]'
+                                    }`}
                                     onClick={() => updateOrderStatus(order.id, primaryAction.nextStatus)}
                                     type="button"
                                   >
                                     {primaryAction.label}
                                   </button>
                                 ) : null}
-                                <button
-                                  className="font-['Manrope'] text-sm font-medium bg-[#efeeec] text-[#1a1c1b] px-4 py-2.5 rounded-[14px] hover:bg-[#e9e8e6] transition-colors"
-                                  onClick={() => markAsRead(order.id)} type="button"
-                                >
-                                  Mark Read
-                                </button>
-                                {(order.accessTokenId || order.guestUid) ? (
+                                {!primaryAction ? (
                                   <button
-                                    className="font-['Manrope'] text-sm font-medium text-[#ba1a1a] px-4 py-2.5 rounded-[14px] border border-[#ba1a1a]/20 hover:bg-[#ffdad6] transition-colors disabled:opacity-50 flex items-center gap-1"
+                                    className="font-['Manrope'] text-sm font-medium bg-[#efeeec] text-[#1a1c1b] px-4 py-2 rounded transition-colors hover:bg-[#e9e8e6]"
+                                    onClick={() => markAsRead(order.id)} type="button"
+                                  >
+                                    Update Status
+                                  </button>
+                                ) : null}
+                                {sla && (order.accessTokenId || order.guestUid) ? (
+                                  <button
+                                    className="font-['Manrope'] text-sm font-medium text-[#ba1a1a] px-4 py-2 rounded border border-[#ba1a1a]/20 hover:bg-[#ffdad6] transition-colors disabled:opacity-50 flex items-center gap-1"
                                     disabled={revokingSessionId === (order.accessTokenId || order.guestUid)}
                                     onClick={() => handleRevokeGuest(order.accessTokenId || order.guestUid)}
                                     type="button"
@@ -1746,10 +1751,10 @@ export default function HouseApp() {
                 </div>
 
                 {/* Product grid */}
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-8">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                   {visibleProducts.map((product) => (
-                    <article key={product.id} className={`group ${ELEVATED_PANEL_CLASS} overflow-hidden relative max-w-[22rem] transition-transform duration-300 hover:-translate-y-1`}>
-                      <div className="h-56 overflow-hidden relative bg-[#e9e8e6]">
+                    <article key={product.id} className="group bg-white rounded-lg overflow-hidden relative shadow-[0_4px_20px_rgba(26,28,27,0.02)] transition-transform duration-300 hover:-translate-y-1">
+                      <div className="h-64 overflow-hidden relative bg-[#e9e8e6]">
                         {product.image ? (
                           <img src={product.image} alt={product.name} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
                         ) : (
@@ -1765,14 +1770,13 @@ export default function HouseApp() {
                           </span>
                         </div>
                       </div>
-                      <div className="p-5 relative -mt-8">
+                      <div className="p-6 relative -mt-8">
                         <div className="flex justify-between items-start gap-4 mb-2">
-                          <h3 className="font-['Noto_Serif'] text-[2rem] leading-[1.05] text-[#1a1c1b]">{product.name}</h3>
+                          <h3 className="font-['Noto_Serif'] text-xl leading-tight text-[#1a1c1b] w-3/4">{product.name}</h3>
                           <span className="font-['Noto_Serif'] text-lg text-[#775a19]">{formatIdr(product.price)}</span>
                         </div>
-                        <p className="font-['Manrope'] text-sm text-[#4e4639] mb-2 line-clamp-2">{product.description}</p>
-                        <p className="font-['Manrope'] text-xs text-[#4e4639]/70 uppercase tracking-widest">{product.category}</p>
-                        <div className="flex justify-between items-center pt-6 mt-6 border-t border-[#f4f3f1]">
+                        <p className={`font-['Manrope'] text-sm text-[#4e4639] mb-6 line-clamp-2 ${product.isAvailable ? '' : 'opacity-75'}`}>{product.description}</p>
+                        <div className="flex justify-between items-center pt-4 border-t border-[#f4f3f1]">
                           <div className="flex gap-1">
                             <button
                               className="text-[#775a19] hover:text-[#4e3700] transition-colors p-2 rounded-full hover:bg-[#f4f3f1]"
@@ -1782,12 +1786,6 @@ export default function HouseApp() {
                             </button>
                           </div>
                           <div className="flex items-center gap-3">
-                            <button
-                              className="text-[#ba1a1a] hover:text-[#93000a] transition-colors p-2 rounded-full hover:bg-[#ffdad6]"
-                              onClick={() => deleteProduct(product.id)} type="button"
-                            >
-                              <span className="material-symbols-outlined text-[20px]">delete</span>
-                            </button>
                             <label className="relative inline-flex items-center cursor-pointer">
                               <input
                                 type="checkbox" className="sr-only peer"
@@ -1796,6 +1794,12 @@ export default function HouseApp() {
                               />
                               <div className="w-11 h-6 bg-[#e9e8e6] rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:border-[#e9e8e6] after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#775a19]" />
                             </label>
+                            <button
+                              className="text-[#ba1a1a] hover:text-[#93000a] transition-colors p-2 rounded-full hover:bg-[#ffdad6]"
+                              onClick={() => deleteProduct(product.id)} type="button"
+                            >
+                              <span className="material-symbols-outlined text-[20px]">delete</span>
+                            </button>
                           </div>
                         </div>
                       </div>
@@ -1823,15 +1827,15 @@ export default function HouseApp() {
                     <p className="font-['Manrope'] text-[#4e4639] text-base font-light leading-relaxed">Review recent dining experiences to maintain the exacting standards of our culinary service.</p>
                   </div>
                   <div className="flex gap-4 shrink-0">
-                    <div className={`${TONAL_PANEL_CLASS} p-5 min-w-[120px]`}>
+                    <div className="bg-[#f4f3f1] p-5 rounded min-w-[140px]">
                       <span className="block text-sm text-[#4e4639] font-['Manrope'] mb-1">Avg Rating</span>
                       <div className="flex items-baseline gap-2">
                         <span className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{averageRating}</span>
                         <span className="material-symbols-outlined text-[#775a19] text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>star</span>
                       </div>
                     </div>
-                    <div className={`${TONAL_PANEL_CLASS} p-5 min-w-[120px]`}>
-                      <span className="block text-sm text-[#4e4639] font-['Manrope'] mb-1">Reviews</span>
+                    <div className="bg-[#f4f3f1] p-5 rounded min-w-[140px]">
+                      <span className="block text-sm text-[#4e4639] font-['Manrope'] mb-1">Recent Reviews</span>
                       <span className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{feedbackOrders.length}</span>
                     </div>
                   </div>
@@ -1859,13 +1863,16 @@ export default function HouseApp() {
                         key={option.id}
                         type="button"
                         onClick={() => setFeedbackFilter(option.id)}
-                        className={`rounded-full border px-5 py-3 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] transition ${
+                        className={`rounded-full border px-6 py-3 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] transition ${
                           feedbackFilter === option.id
                             ? 'border-[#775a19] bg-white text-[#775a19]'
                             : 'border-[#d1c5b4]/40 bg-white text-[#4e4639] hover:bg-[#f4f3f1]'
                         }`}
                       >
-                        {option.label}
+                        {option.id === 'all' ? <span className="inline-flex items-center gap-2"><span className="material-symbols-outlined text-[16px]">filter_list</span>{option.label}</span> : null}
+                        {option.id === '5' ? <span className="inline-flex items-center gap-1">5<span className="material-symbols-outlined text-[15px] text-[#775a19]" style={{ fontVariationSettings: "'FILL' 1" }}>star</span></span> : null}
+                        {option.id === '4' ? <span className="inline-flex items-center gap-1">4<span className="material-symbols-outlined text-[15px] text-[#775a19]" style={{ fontVariationSettings: "'FILL' 1" }}>star</span></span> : null}
+                        {option.id === 'week' ? <span className="inline-flex items-center gap-2"><span className="material-symbols-outlined text-[16px]">calendar_today</span>{option.label}</span> : null}
                       </button>
                     ))}
                   </div>
@@ -2076,11 +2083,6 @@ export default function HouseApp() {
                       ))}
                     </div>
                     <div className="flex gap-3">
-                      <input
-                        className="rounded-[14px] bg-[#e9e8e6]/92 px-4 py-2.5 font-['Manrope'] text-sm text-[#1a1c1b] outline-none ring-1 ring-[#ece5db]"
-                        type="date" value={selectedDate}
-                        onChange={(e) => setSelectedDate(e.target.value)}
-                      />
                       <button
                         className="flex items-center gap-2 text-[#775a19] font-['Manrope'] font-medium text-sm px-4 py-2.5 border border-[#d1c5b4]/30 rounded-[14px] hover:bg-[#f4f3f1] transition-colors"
                         onClick={exportRevenue} type="button"
@@ -2132,62 +2134,41 @@ export default function HouseApp() {
                     </div>
                   </div>
 
-                  <div className={`${ELEVATED_PANEL_CLASS} p-8 mb-10`}>
+                  <div className="w-full bg-white rounded-xl p-8 mb-12 shadow-[0_20px_40px_rgba(26,28,27,0.06)] min-h-[400px] flex flex-col">
                     <div className="mb-8 flex items-center justify-between gap-4">
-                      <h3 className="font-['Noto_Serif'] text-[2.1rem] text-[#1a1c1b]">Revenue Trend</h3>
+                      <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Revenue Trend</h3>
                       <button className="text-[#5f5e5e]" type="button">
                         <span className="material-symbols-outlined">more_horiz</span>
                       </button>
                     </div>
-                    <div className="grid grid-cols-[auto_1fr] gap-6">
-                      <div className="hidden h-[280px] flex-col justify-between py-4 text-xs text-[#7c7366] sm:flex">
+                    <div className="relative flex-1 mt-8">
+                      <div className="absolute left-0 top-0 hidden h-full flex-col justify-between py-4 pl-2 text-xs text-[#7c7366] sm:flex">
                         {[1, 0.8, 0.6, 0.4, 0.2].map((step) => (
                           <span key={step}>{formatCompactCurrency(Math.max(...revenueTrend.map((point) => point.value), 0) * step)}</span>
                         ))}
                       </div>
-                      <div>
-                        <div className="relative h-[280px] w-full overflow-hidden rounded-[18px] bg-[#fffdf9]">
-                          <svg viewBox="0 0 720 280" preserveAspectRatio="none" className="h-full w-full">
-                            {[40, 90, 140, 190, 240].map((y) => (
-                              <line key={y} x1="0" y1={y} x2="720" y2={y} stroke="#f1ece4" strokeWidth="1" />
-                            ))}
-                            {(() => {
-                              const maxValue = Math.max(...revenueTrend.map((point) => point.value), 1);
-                              const coordinates = revenueTrend.map((point, index) => {
-                                const x = revenueTrend.length === 1 ? 360 : (index * (720 / (revenueTrend.length - 1)));
-                                const y = 240 - ((point.value / maxValue) * 180);
-                                return { x, y, value: point.value };
-                              });
-                              const linePath = coordinates.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
-                              const areaPath = `${linePath} L 720 240 L 0 240 Z`;
-                              return (
-                                <>
-                                  <path d={areaPath} fill="url(#revenueArea)" opacity="0.22" />
-                                  <path d={linePath} fill="none" stroke="#8b6418" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
-                                  {coordinates.map((point) => (
-                                    <circle key={`${point.x}-${point.y}`} cx={point.x} cy={point.y} r="6" fill="#ffffff" stroke="#8b6418" strokeWidth="3" />
-                                  ))}
-                                  <defs>
-                                    <linearGradient id="revenueArea" x1="0" y1="0" x2="0" y2="1">
-                                      <stop offset="0%" stopColor="#c5a059" />
-                                      <stop offset="100%" stopColor="#ffffff" />
-                                    </linearGradient>
-                                  </defs>
-                                </>
-                              );
-                            })()}
-                          </svg>
-                        </div>
-                        <div
-                          className="mt-4 grid gap-3"
-                          style={{ gridTemplateColumns: `repeat(${revenueTrend.length}, minmax(0, 1fr))` }}
-                        >
-                          {revenueTrend.map((point) => (
-                            <div key={point.label} className="text-center">
-                              <p className="font-['Manrope'] text-xs uppercase tracking-[0.16em] text-[#7c7366]">{point.label}</p>
-                            </div>
-                          ))}
-                        </div>
+                      <div className="flex h-[280px] items-end justify-between border-b border-[#ebe2d6]/60 px-4 pb-8 pl-10">
+                        {(() => {
+                          const maxValue = Math.max(...revenueTrend.map((point) => point.value), 1);
+                          return revenueTrend.map((point) => {
+                            const isActive = point.label === 'THU' || point.label === 'Week 4';
+                            const height = `${Math.max(20, Math.round((point.value / maxValue) * 90))}%`;
+                            return (
+                              <div key={point.label} className={`group relative w-10 rounded-t-sm transition-colors ${isActive ? 'bg-[#8b6418]/80 shadow-[0_0_15px_rgba(197,160,89,0.3)]' : 'bg-[#e3e2e0] hover:bg-[#c5a059]/30'}`} style={{ height }}>
+                                <div className="absolute -top-8 left-1/2 -translate-x-1/2 rounded bg-[#2f3130] px-2 py-1 text-xs whitespace-nowrap text-[#f1f1ef] opacity-0 transition-opacity group-hover:opacity-100">
+                                  {formatIdr(point.value)}
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                      <div className="mt-4 grid gap-3 pl-10" style={{ gridTemplateColumns: `repeat(${revenueTrend.length}, minmax(0, 1fr))` }}>
+                        {revenueTrend.map((point) => (
+                          <div key={point.label} className="text-center">
+                            <p className={`font-['Manrope'] text-xs uppercase tracking-[0.16em] ${point.label === 'THU' || point.label === 'Week 4' ? 'font-bold text-[#775a19]' : 'text-[#7c7366]'}`}>{point.label}</p>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   </div>
@@ -2372,19 +2353,19 @@ export default function HouseApp() {
                   <section className={`lg:col-span-8 ${ELEVATED_PANEL_CLASS} p-8`}>
                     <div className="mb-8 flex items-center gap-3 border-b border-[#f4f3f1] pb-4">
                       <span className="material-symbols-outlined text-[#c5a059]" style={{ fontVariationSettings: "'FILL' 1" }}>schedule</span>
-                      <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Operating Hours</h3>
+                      <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Operating Hours</h3>
                     </div>
                     <div className="space-y-5">
-                      {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'].map((day) => (
+                      {['Monday', 'Tuesday', 'Wednesday'].map((day) => (
                         <div key={day} className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                          <div className="flex items-center gap-4 md:w-1/3">
+                          <div className="flex items-center gap-6 md:w-1/3">
                             <input type="checkbox" defaultChecked className="h-5 w-5 accent-[#775a19]" />
-                            <span className="font-['Manrope'] text-lg text-[#1a1c1b]">{day}</span>
+                            <span className="font-['Manrope'] text-lg text-[#1a1c1b] w-24">{day}</span>
                           </div>
                           <div className="flex items-center gap-4">
-                            <input type="time" defaultValue="06:00" className="rounded-[10px] bg-[#f4f3f1] px-4 py-3 text-sm text-[#1a1c1b] outline-none ring-1 ring-[#ebe3d8]" />
+                            <input type="time" defaultValue="06:00" className="w-32 rounded-t-[2px] bg-[#e9e8e6] px-4 py-3 text-center text-sm text-[#1a1c1b] outline-none border-b border-[#775a19]" />
                             <span className="text-sm text-[#5f5e5e]">to</span>
-                            <input type="time" defaultValue="23:30" className="rounded-[10px] bg-[#f4f3f1] px-4 py-3 text-sm text-[#1a1c1b] outline-none ring-1 ring-[#ebe3d8]" />
+                            <input type="time" defaultValue="23:30" className="w-32 rounded-t-[2px] bg-[#e9e8e6] px-4 py-3 text-center text-sm text-[#1a1c1b] outline-none border-b border-[#775a19]" />
                           </div>
                         </div>
                       ))}
@@ -2393,7 +2374,7 @@ export default function HouseApp() {
                   <section className={`lg:col-span-4 ${TONAL_PANEL_CLASS} p-8`}>
                     <div className="mb-8 flex items-center gap-3">
                       <span className="material-symbols-outlined text-[#775a19]" style={{ fontVariationSettings: "'FILL' 1" }}>account_balance</span>
-                      <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Financials</h3>
+                      <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Financials</h3>
                     </div>
                     <div className="space-y-8">
                       <div>
