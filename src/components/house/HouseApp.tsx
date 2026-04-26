@@ -1884,7 +1884,7 @@ export default function HouseApp() {
                   <div className="space-y-8">
                     <div className="grid grid-cols-1 xl:grid-cols-[1.45fr_0.7fr] gap-8">
                       {feedbackHeroOrder ? (
-                        <article className={`${ELEVATED_PANEL_CLASS} p-10`}>
+                        <article className="bg-white p-8 rounded relative group shadow-[0_10px_30px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/20 lg:col-span-2">
                           <div className="flex items-start justify-between gap-5">
                             <div>
                               <div className="mb-5 flex items-center gap-1">
@@ -1901,18 +1901,18 @@ export default function HouseApp() {
                                   </span>
                                 ))}
                               </div>
-                              <h3 className="font-['Noto_Serif'] text-[2.6rem] leading-[1.02] text-[#1a1c1b]">
-                                {feedbackHeroOrder.feedbackSummary || 'Exceptional dining service'}
+                              <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">
+                                {feedbackHeroOrder.feedbackSummary || 'Exceptional Breakfast Service'}
                               </h3>
                             </div>
-                            <span className="bg-[#f4f3f1] px-4 py-2 text-xs uppercase tracking-[0.2em] text-[#4e4639]">
+                            <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639] bg-[#f4f3f1] px-3 py-1 rounded">
                               Suite {feedbackHeroOrder.roomNumber}
                             </span>
                           </div>
-                          <p className="mt-8 max-w-4xl font-['Manrope'] text-[1.05rem] leading-9 text-[#4e4639]">
+                          <p className="font-['Manrope'] text-[#4e4639] leading-relaxed mb-8 mt-0">
                             "{feedbackHeroOrder.feedbackText || feedbackHeroOrder.feedbackSummary || 'Guest submitted a rating without written comments.'}"
                           </p>
-                          <div className="mt-10 flex items-end justify-between gap-6 border-t border-[#f4f3f1] pt-7">
+                          <div className="flex justify-between items-end border-t border-[#e3e2e0]/50 pt-6 mt-auto">
                             <div className="flex items-center gap-4">
                               <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#1a1c1b] text-white">
                                 {feedbackHeroOrder.lastName?.slice(0, 1) || 'G'}
@@ -1922,7 +1922,7 @@ export default function HouseApp() {
                                 <p className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatFeedbackTime(feedbackHeroOrder.createdAt)}</p>
                               </div>
                             </div>
-                            <button className="font-['Manrope'] text-sm uppercase tracking-[0.14em] text-[#8b6418]" type="button">
+                            <button className="text-[#775a19] font-['Manrope'] text-sm uppercase tracking-widest hover:text-[#c5a059] transition-colors" type="button">
                               Acknowledge
                             </button>
                           </div>
@@ -1930,7 +1930,7 @@ export default function HouseApp() {
                       ) : null}
 
                       {feedbackSideOrder ? (
-                        <article className={`${ELEVATED_PANEL_CLASS} p-8`}>
+                        <article className="bg-white p-8 rounded relative group shadow-[0_10px_30px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/20 flex flex-col">
                           <div className="flex items-start justify-between gap-4">
                             <div className="mb-4 flex items-center gap-1">
                               {[1, 2, 3, 4, 5].map((star) => (
@@ -1946,17 +1946,17 @@ export default function HouseApp() {
                                 </span>
                               ))}
                             </div>
-                            <span className="text-sm uppercase tracking-[0.18em] text-[#4e4639]">Suite {feedbackSideOrder.roomNumber}</span>
+                            <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]">Suite {feedbackSideOrder.roomNumber}</span>
                           </div>
-                          <h3 className="font-['Noto_Serif'] text-[2rem] leading-tight text-[#1a1c1b]">
-                            {feedbackSideOrder.feedbackSummary || 'Lovely, with minor notes'}
+                          <h3 className="font-['Noto_Serif'] text-lg text-[#1a1c1b] mb-3">
+                            {feedbackSideOrder.feedbackSummary || 'Lovely, but slightly cold'}
                           </h3>
-                          <p className="mt-6 font-['Manrope'] text-base leading-8 text-[#4e4639]">
+                          <p className="font-['Manrope'] text-[#4e4639] text-sm leading-relaxed mb-8 flex-grow">
                             "{feedbackSideOrder.feedbackText || feedbackSideOrder.feedbackSummary || 'Guest shared a concise dining impression.'}"
                           </p>
-                          <div className="mt-12 flex items-end justify-between gap-4 border-t border-[#f4f3f1] pt-6">
+                          <div className="flex justify-between items-end border-t border-[#e3e2e0]/50 pt-4">
                             <p className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatFeedbackTime(feedbackSideOrder.createdAt)}</p>
-                            <button className="font-['Manrope'] text-sm uppercase tracking-[0.14em] text-[#8b6418]" type="button">
+                            <button className="text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest hover:text-[#c5a059] transition-colors" type="button">
                               Reply
                             </button>
                           </div>
@@ -1966,9 +1966,8 @@ export default function HouseApp() {
 
                     <div className="grid grid-cols-1 xl:grid-cols-[0.7fr_1.3fr] gap-8">
                       {feedbackIssueOrder ? (
-                        <article className={`${ELEVATED_PANEL_CLASS} relative overflow-hidden p-8`}>
-                          <div className="absolute inset-y-0 left-0 w-[4px] bg-[#e4bbb9]" />
-                          <div className="ml-3">
+                        <article className="bg-white p-8 rounded relative group shadow-[0_10px_30px_rgba(26,28,27,0.03)] border-l-4 border-[#ba1a1a]/50 flex flex-col">
+                          <div>
                             <div className="flex items-start justify-between gap-4">
                               <div className="mb-4 flex items-center gap-1">
                                 {[1, 2, 3, 4, 5].map((star) => (
@@ -1984,20 +1983,20 @@ export default function HouseApp() {
                                   </span>
                                 ))}
                               </div>
-                              <span className="text-sm uppercase tracking-[0.18em] text-[#4e4639]">Suite {feedbackIssueOrder.roomNumber}</span>
+                              <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]">Suite {feedbackIssueOrder.roomNumber}</span>
                             </div>
-                            <h3 className="font-['Noto_Serif'] text-[2rem] leading-tight text-[#1a1c1b]">
-                              {feedbackIssueOrder.feedbackSummary || 'Delayed service'}
+                            <h3 className="font-['Noto_Serif'] text-lg text-[#1a1c1b] mb-3">
+                              {feedbackIssueOrder.feedbackSummary || 'Delayed Service'}
                             </h3>
-                            <p className="mt-6 font-['Manrope'] text-base leading-8 text-[#4e4639]">
+                            <p className="font-['Manrope'] text-[#4e4639] text-sm leading-relaxed mb-8 flex-grow">
                               "{feedbackIssueOrder.feedbackText || 'Action required on this guest experience.'}"
                             </p>
-                            <div className="mt-10 flex items-end justify-between gap-4 border-t border-[#f4f3f1] pt-6">
+                            <div className="flex justify-between items-end border-t border-[#ba1a1a]/10 pt-4">
                               <div>
-                                <p className="font-['Manrope'] text-sm text-[#ba1a1a]">Action Required</p>
-                                <p className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatFeedbackTime(feedbackIssueOrder.createdAt)}</p>
+                                <p className="font-['Manrope'] text-xs text-[#ba1a1a] font-medium">Action Required</p>
+                                <p className="font-['Manrope'] text-xs text-[#5f5e5e]">{formatFeedbackTime(feedbackIssueOrder.createdAt)}</p>
                               </div>
-                              <button className="font-['Manrope'] text-sm uppercase tracking-[0.14em] text-[#ba1a1a]" type="button">
+                              <button className="text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest hover:bg-[#ba1a1a]/5 px-2 py-1 rounded transition-colors" type="button">
                                 Resolve
                               </button>
                             </div>
@@ -2006,8 +2005,8 @@ export default function HouseApp() {
                       ) : null}
 
                       {feedbackStoryOrder ? (
-                        <article className={`${ELEVATED_PANEL_CLASS} p-8`}>
-                          <div className="grid gap-6 lg:grid-cols-[1fr_0.72fr]">
+                        <article className="bg-white p-8 rounded relative group lg:col-span-2 shadow-[0_10px_30px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/20 flex flex-col md:flex-row gap-8">
+                          <div className="flex-1">
                             <div>
                               <div className="mb-4 flex items-center gap-1">
                                 {[1, 2, 3, 4, 5].map((star) => (
@@ -2023,30 +2022,32 @@ export default function HouseApp() {
                                   </span>
                                 ))}
                               </div>
-                              <div className="mb-5 flex items-center justify-between gap-4">
-                                <h3 className="font-['Noto_Serif'] text-[2rem] leading-tight text-[#1a1c1b]">
-                                  {feedbackStoryOrder.feedbackSummary || 'A perfect late night supper'}
+                              <div className="mb-6 flex items-center justify-between gap-4">
+                                <h3 className="font-['Noto_Serif'] text-lg text-[#1a1c1b]">
+                                  {feedbackStoryOrder.feedbackSummary || 'A Perfect Late Night Suppertime'}
                                 </h3>
-                                <span className="bg-[#f4f3f1] px-4 py-2 text-xs uppercase tracking-[0.2em] text-[#4e4639]">
+                                <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639] bg-[#f4f3f1] px-3 py-1 rounded">
                                   Suite {feedbackStoryOrder.roomNumber}
                                 </span>
                               </div>
-                              <p className="font-['Manrope'] text-base leading-8 text-[#4e4639]">
+                              <p className="font-['Manrope'] text-[#4e4639] text-sm leading-relaxed mb-6">
                                 "{feedbackStoryOrder.feedbackText || feedbackStoryOrder.feedbackSummary || 'Guest shared a memorable meal recap.'}"
                               </p>
                             </div>
-                            <div className="border-t border-[#f4f3f1] pt-6 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0">
-                              <p className="font-['Manrope'] text-sm font-semibold text-[#1a1c1b]">Ordered Items</p>
-                              <ul className="mt-4 space-y-2 font-['Manrope'] text-sm leading-7 text-[#4e4639]">
+                          </div>
+                          <div className="md:w-64 flex flex-col justify-between border-t md:border-t-0 md:border-l border-[#e3e2e0]/50 pt-6 md:pt-0 md:pl-8">
+                            <div>
+                              <p className="font-['Manrope'] text-sm font-medium text-[#1a1c1b] mb-1">Ordered Items</p>
+                              <ul className="font-['Manrope'] text-xs text-[#4e4639] space-y-1">
                                 {feedbackStoryOrder.items.slice(0, 4).map((item) => (
                                   <li key={item.id}>- {item.name}</li>
                                 ))}
                               </ul>
                             </div>
                           </div>
-                          <div className="mt-8 flex items-end justify-between gap-4 border-t border-[#f4f3f1] pt-6">
-                            <p className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatFeedbackTime(feedbackStoryOrder.createdAt)}</p>
-                            <button className="font-['Manrope'] text-sm uppercase tracking-[0.14em] text-[#8b6418]" type="button">
+                          <div className="mt-6 flex justify-between items-center w-full md:hidden">
+                            <p className="font-['Manrope'] text-xs text-[#5f5e5e]">{formatFeedbackTime(feedbackStoryOrder.createdAt)}</p>
+                            <button className="text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest hover:text-[#c5a059] transition-colors" type="button">
                               Acknowledge
                             </button>
                           </div>
@@ -2411,12 +2412,7 @@ export default function HouseApp() {
                             <p className="font-['Manrope'] font-medium text-[#1a1c1b]">{title as string}</p>
                             <p className="font-['Manrope'] text-xs text-[#4e4639] mt-1">{copy as string}</p>
                           </div>
-                          <input
-                            type="checkbox"
-                            defaultChecked={Boolean(checked)}
-                            className="luxury-toggle mt-1"
-                            style={{ appearance: 'none', width: '2.5rem', height: '1.25rem', backgroundColor: Boolean(checked) ? '#c5a059' : '#e9e8e6', borderRadius: '9999px', position: 'relative', cursor: 'pointer', transition: 'background-color 0.3s ease', outline: 'none', flexShrink: 0 }}
-                          />
+                          <input type="checkbox" defaultChecked={Boolean(checked)} className="mt-1 h-5 w-5 accent-[#775a19] shrink-0" />
                         </div>
                       ))}
                     </div>
