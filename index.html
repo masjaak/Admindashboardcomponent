@@ -8,6 +8,47 @@
       <link rel="icon" type="image/png" href="https://i.ibb.co.com/B2YJXXG0/Logo-ciputra-copy.png" />
       <link href="https://fonts.googleapis.com/css2?family=Noto+Serif:wght@300;400;600;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet" />
       <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
+      <script>
+        window.tailwind = window.tailwind || {};
+        window.tailwind.config = {
+          darkMode: "class",
+          theme: {
+            extend: {
+              colors: {
+                primary: "#775a19",
+                "primary-container": "#c5a059",
+                "on-primary": "#ffffff",
+                background: "#faf9f7",
+                surface: "#faf9f7",
+                "surface-container-lowest": "#ffffff",
+                "surface-container-low": "#f4f3f1",
+                "surface-container": "#efeeec",
+                "surface-container-high": "#e9e8e6",
+                "surface-container-highest": "#e3e2e0",
+                "on-surface": "#1a1c1b",
+                "on-surface-variant": "#4e4639",
+                secondary: "#5f5e5e",
+                "outline-variant": "#d1c5b4",
+                error: "#ba1a1a",
+                "error-container": "#ffdad6"
+              },
+              borderRadius: {
+                DEFAULT: "0.125rem",
+                lg: "0.25rem",
+                xl: "0.5rem",
+                full: "0.75rem"
+              },
+              fontFamily: {
+                headline: ["Noto Serif", "serif"],
+                display: ["Noto Serif", "serif"],
+                body: ["Manrope", "sans-serif"],
+                label: ["Manrope", "sans-serif"]
+              }
+            }
+          }
+        };
+      </script>
+      <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
       <style>.material-symbols-outlined { font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; font-family: 'Material Symbols Outlined'; }</style>
     </head>
 

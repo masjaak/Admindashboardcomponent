@@ -1573,7 +1573,7 @@ export default function HouseApp() {
                     <button className="font-['Manrope'] text-sm font-semibold tracking-wide text-[#775a19] bg-[#c5a059]/20 px-6 py-2 rounded-full hover:bg-[#c5a059]/30 transition-colors" type="button">
                       Filter
                     </button>
-                    <button className="font-['Manrope'] text-sm font-semibold tracking-wide text-white bg-[#775a19] px-6 py-2 rounded shadow-sm hover:bg-[#775a19]/90 transition-colors" type="button">
+                    <button className="font-['Manrope'] text-sm font-semibold tracking-wide text-white bg-[#775a19] px-6 py-2 rounded hover:bg-[#775a19]/90 transition-colors" type="button">
                       Pause New Orders
                     </button>
                   </div>
@@ -1670,7 +1670,7 @@ export default function HouseApp() {
                                   <button
                                     className={`px-4 py-2 rounded text-sm font-['Manrope'] font-medium transition ${
                                       order.status === 'incoming'
-                                        ? 'border border-[#b58a35] text-[#8b6418] hover:bg-[#faf4e7]'
+                                        ? 'border border-[#775a19] text-[#775a19] hover:bg-[#775a19]/5'
                                         : 'bg-[#8b6418] text-white hover:bg-[#775a19]'
                                     }`}
                                     onClick={() => updateOrderStatus(order.id, primaryAction.nextStatus)}
@@ -1860,7 +1860,7 @@ export default function HouseApp() {
                         key={option.id}
                         type="button"
                         onClick={() => setFeedbackFilter(option.id)}
-                        className={`rounded-full border px-6 py-3 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] transition ${
+                        className={`rounded-full border px-6 py-3 font-['Manrope'] text-xs uppercase tracking-widest transition ${
                           feedbackFilter === option.id
                             ? 'border-[#775a19] bg-white text-[#775a19]'
                             : 'border-[#d1c5b4]/40 bg-white text-[#4e4639] hover:bg-[#f4f3f1]'
@@ -2174,12 +2174,12 @@ export default function HouseApp() {
 
                   <div className="grid grid-cols-1 xl:grid-cols-[1fr_0.92fr] gap-12">
                     <div>
-                      <h3 className="mb-6 border-b border-[#ece5db] pb-4 font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Top Performing Signatures</h3>
+                      <h3 className="mb-6 border-b border-[#ece5db] pb-4 font-['Noto_Serif'] text-xl text-[#1a1c1b]">Top Performing Signatures</h3>
                       <div className="space-y-6">
                         {revenueLeaders.map((item) => (
-                          <div key={item.name} className={`${ELEVATED_PANEL_CLASS} flex items-center justify-between p-5`}>
+                          <div key={item.name} className="flex items-center justify-between p-4 bg-white rounded-lg hover:bg-[#f4f3f1] transition-colors group cursor-pointer shadow-[0_20px_40px_rgba(26,28,27,0.06)]">
                             <div className="flex items-center gap-4">
-                              <div className="h-[72px] w-[72px] overflow-hidden rounded-[10px] bg-[#e9e8e6]">
+                              <div className="w-16 h-16 rounded overflow-hidden relative bg-[#e3e2e0]">
                                 {item.image ? (
                                   <img src={item.image} alt={item.name} className="h-full w-full object-cover" />
                                 ) : (
@@ -2189,17 +2189,17 @@ export default function HouseApp() {
                                 )}
                               </div>
                               <div>
-                                <p className="font-['Manrope'] text-xl text-[#1a1c1b]">{item.name}</p>
-                              <p className="mt-1 font-['Manrope'] text-sm text-[#5f5e5e]">{item.orders} Orders</p>
+                                <p className="font-['Manrope'] font-medium text-[#1a1c1b] mb-1">{item.name}</p>
+                                <p className="font-['Manrope'] text-xs text-[#5f5e5e]">{item.orders} Orders</p>
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <p className={`font-['Noto_Serif'] text-lg ${item === revenueLeaders[0] ? 'text-[#775a19]' : 'text-[#1a1c1b]'}`}>{formatIdr(item.revenue)}</p>
+                              <p className="font-['Manrope'] text-xs text-[#5f5e5e]">
+                                {revenueOverview.revenue ? `${((item.revenue / revenueOverview.revenue) * 100).toFixed(1)}% of rev` : '0% of rev'}
+                              </p>
                             </div>
                           </div>
-                          <div className="text-right">
-                            <p className="font-['Noto_Serif'] text-2xl text-[#775a19]">{formatIdr(item.revenue)}</p>
-                            <p className="mt-1 font-['Manrope'] text-sm text-[#5f5e5e]">
-                                {revenueOverview.revenue ? `${((item.revenue / revenueOverview.revenue) * 100).toFixed(1)}% of rev` : '0% of rev'}
-                            </p>
-                          </div>
-                        </div>
                         ))}
                         {revenueLeaders.length === 0 ? <p className="text-sm text-[#4e4639]">No signature data available yet.</p> : null}
                       </div>
@@ -2207,17 +2207,17 @@ export default function HouseApp() {
 
                     <div className="space-y-6">
                       <div>
-                        <h3 className="mb-6 border-b border-[#ece5db] pb-4 font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Revenue Distribution</h3>
-                        <div className="space-y-8">
+                        <h3 className="mb-6 border-b border-[#ece5db] pb-4 font-['Noto_Serif'] text-xl text-[#1a1c1b]">Revenue Distribution</h3>
+                        <div className="space-y-8 mt-8 px-4">
                           {revenueDistribution.map((segment, index) => (
                             <div key={segment.label}>
-                              <div className="mb-2 flex items-center justify-between gap-4">
-                                <span className="font-['Manrope'] text-lg text-[#1a1c1b]">{segment.label}</span>
-                                <span className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">{formatIdr(segment.revenue)}</span>
+                              <div className="mb-2 flex items-center justify-between gap-4 text-sm">
+                                <span className="font-medium text-[#1a1c1b]">{segment.label}</span>
+                                <span className={`font-['Noto_Serif'] ${index === 0 ? 'text-[#775a19]' : 'text-[#1a1c1b]'}`}>{formatIdr(segment.revenue)}</span>
                               </div>
-                              <div className="h-3 rounded-full bg-[#ece8e1]">
+                              <div className="w-full h-2 bg-[#e9e8e6] rounded-full overflow-hidden">
                                 <div
-                                  className={`h-3 rounded-full ${index === 0 ? 'bg-[#8b6418]' : index === 1 ? 'bg-[#c5a059]' : 'bg-[#d7c49b]'}`}
+                                  className={`h-full rounded-full ${index === 0 ? 'bg-[#775a19]' : index === 1 ? 'bg-[#c5a059]' : 'bg-[#d1c5b4]'}`}
                                   style={{ width: `${Math.max(segment.percent, 8)}%` }}
                                 />
                               </div>
@@ -2227,7 +2227,7 @@ export default function HouseApp() {
                         </div>
                       </div>
 
-                      <div className={`${TONAL_PANEL_CLASS} p-6`}>
+                      <div className="mt-12 bg-[#f4f3f1] p-6 rounded-lg border border-[#e3e2e0]/30">
                         <p className="mb-3 font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e]">Insight</p>
                         <p className="font-['Manrope'] text-sm leading-7 text-[#4e4639]">
                           {revenueDistribution[0]
