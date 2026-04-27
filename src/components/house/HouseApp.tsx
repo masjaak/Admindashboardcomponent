@@ -14,7 +14,7 @@ import {
   updateDoc,
 } from 'firebase/firestore';
 import { User, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { auth, db } from '../../lib/firebase';
+import { auth, db, firebaseConfig } from '../../lib/firebase';
 import { createGuestQrToken, revokeGuestSessionAsAdmin } from '../../lib/adminAccess';
 import {
   createAdminUser,
@@ -153,8 +153,22 @@ interface AlertPreference {
   enabled: boolean;
 }
 
+type FirestoreRestValue =
+  | { stringValue?: string }
+  | { integerValue?: string }
+  | { doubleValue?: number }
+  | { booleanValue?: boolean }
+  | { timestampValue?: string }
+  | { nullValue?: null };
+
+interface FirestoreRestDocument {
+  name: string;
+}
+
 const TERMINAL_STATUSES = new Set(['delivered', 'completed', 'cancelled']);
 const SLA_THRESHOLD_MS = 20 * 60 * 1000; // 20 minutes
+const CLOUD_WRITE_TIMEOUT_MS = 8000;
+const LOCAL_SHIFT_NOTES_KEY = 'admindashboardcomponent_shift_notes';
 
 const STATUS_COLORS: Record<string, string> = {
   incoming: 'bg-blue-50 text-blue-800',
@@ -201,6 +215,116 @@ const TAB_SEARCH_PLACEHOLDERS: Record<AdminTab, string> = {
 
 const ELEVATED_PANEL_CLASS = 'rounded-lg bg-white shadow-[0_10px_30px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/20';
 const TONAL_PANEL_CLASS = 'rounded-lg bg-[#f4f3f1] border border-[#d1c5b4]/20';
+
+function getFirestoreRestBaseUrl(): string {
+  return `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents`;
+}
+
+function getFirestoreDocumentId(documentName: string): string {
+  return documentName.split('/').pop() || '';
+}
+
+function writeFirestoreRestValue(value: unknown): FirestoreRestValue {
+  if (value instanceof Date) return { timestampValue: value.toISOString() };
+  if (value === null || typeof value === 'undefined') return { nullValue: null };
+  if (typeof value === 'string') return { stringValue: value };
+  if (typeof value === 'boolean') return { booleanValue: value };
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? { integerValue: String(value) } : { doubleValue: value };
+  }
+  return { stringValue: String(value) };
+}
+
+async function fetchJsonWithTimeout<T>(url: string, init?: RequestInit): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), CLOUD_WRITE_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    if (!response.ok) throw new Error(`rest-${response.status}`);
+    return await response.json() as T;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('timeout');
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+async function patchFirestoreDocument(
+  collectionName: string,
+  docId: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const updateMask = Object.keys(payload)
+    .map((field) => `updateMask.fieldPaths=${encodeURIComponent(field)}`)
+    .join('&');
+  await fetchJsonWithTimeout<FirestoreRestDocument>(
+    `${getFirestoreRestBaseUrl()}/${collectionName}/${encodeURIComponent(docId)}?key=${firebaseConfig.apiKey}&${updateMask}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fields: Object.fromEntries(Object.entries(payload).map(([key, value]) => [key, writeFirestoreRestValue(value)])),
+      }),
+    },
+  );
+}
+
+async function createFirestoreDocument(collectionName: string, payload: Record<string, unknown>): Promise<string> {
+  const document = await fetchJsonWithTimeout<FirestoreRestDocument>(
+    `${getFirestoreRestBaseUrl()}/${collectionName}?key=${firebaseConfig.apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fields: Object.fromEntries(Object.entries(payload).map(([key, value]) => [key, writeFirestoreRestValue(value)])),
+      }),
+    },
+  );
+  return getFirestoreDocumentId(document.name);
+}
+
+function withTimeout<T>(promise: Promise<T>, message = 'timeout'): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      window.setTimeout(() => reject(new Error(message)), CLOUD_WRITE_TIMEOUT_MS);
+    }),
+  ]);
+}
+
+function loadLocalShiftNotes(): ShiftNote[] {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_SHIFT_NOTES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as Array<Omit<ShiftNote, 'createdAt'> & { createdAt: string | null }>;
+    return parsed.map((note) => ({
+      ...note,
+      createdAt: note.createdAt ? new Date(note.createdAt) : null,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function persistLocalShiftNote(note: ShiftNote): void {
+  const next = [note, ...loadLocalShiftNotes()].slice(0, 80);
+  window.localStorage.setItem(LOCAL_SHIFT_NOTES_KEY, JSON.stringify(next.map((item) => ({
+    ...item,
+    createdAt: item.createdAt ? item.createdAt.toISOString() : null,
+  }))));
+}
+
+function mergeShiftNotes(remoteNotes: ShiftNote[]): ShiftNote[] {
+  const byId = new Map<string, ShiftNote>();
+  for (const note of [...loadLocalShiftNotes(), ...remoteNotes]) {
+    byId.set(note.id, note);
+  }
+  return Array.from(byId.values()).sort((a, b) => (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0));
+}
 
 function normalizeRole(role: unknown): AdminRole {
   return role === 'staff' ? 'staff' : 'manager';
@@ -312,9 +436,8 @@ function getRevenuePeriodBounds(anchor: Date, range: 'daily' | 'weekly' | 'month
 function getOrderNextAction(status: string): { label: string; nextStatus: string } | null {
   switch (status) {
     case 'incoming':
-      return { label: 'Accept Order', nextStatus: 'confirmed' };
     case 'confirmed':
-      return { label: 'Send to Kitchen', nextStatus: 'kitchen' };
+      return { label: 'Send to Kitchen', nextStatus: 'preparing' };
     case 'kitchen':
       return { label: 'Start Prep', nextStatus: 'preparing' };
     case 'preparing':
@@ -495,12 +618,13 @@ function downloadExcelFile(filename: string, mimeType: string, content: string):
 }
 
 function LoadingSkeleton({ lines = 3 }: { lines?: number }) {
+  const widths = ['58%', '76%', '64%', '82%', '70%', '60%'];
   return (
     <div className={`${ELEVATED_PANEL_CLASS} p-8 space-y-4 animate-pulse`}>
       {Array.from({ length: lines }, (_, i) => (
         <div key={i} className="flex gap-4 items-center">
           <div className="h-4 bg-[#e9e8e6] rounded w-1/4" />
-          <div className="h-4 bg-[#e9e8e6] rounded" style={{ width: `${50 + Math.random() * 30}%` }} />
+          <div className="h-4 bg-[#e9e8e6] rounded" style={{ width: widths[i % widths.length] }} />
         </div>
       ))}
     </div>
@@ -944,7 +1068,12 @@ export default function HouseApp() {
     const unsubNotes = onSnapshot(
       query(collection(db, 'shiftNotes'), orderBy('createdAt', 'desc'), limit(60)),
       (snap) => {
-        setShiftNotes(snap.docs.map((d) => normalizeShiftNote(d.id, d.data() as Record<string, unknown>)));
+        const remoteNotes = snap.docs.map((d) => normalizeShiftNote(d.id, d.data() as Record<string, unknown>));
+        setShiftNotes(mergeShiftNotes(remoteNotes));
+      },
+      (err) => {
+        console.error('Failed to load shift notes', err);
+        setShiftNotes(loadLocalShiftNotes());
       },
     );
 
@@ -1103,6 +1232,42 @@ export default function HouseApp() {
     showDashboardNotice('No unread incoming orders right now.');
   }
 
+  async function updateOrderStatusDocument(orderId: string, status: string): Promise<void> {
+    const updatedAt = new Date();
+    try {
+      await patchFirestoreDocument('orders', orderId, { status, isRead: true, updatedAt });
+      return;
+    } catch (restError) {
+      console.warn('REST order status update failed, trying Firebase SDK.', restError);
+    }
+
+    await withTimeout(
+      updateDoc(doc(db, 'orders', orderId), { status, isRead: true, updatedAt: serverTimestamp() }),
+      'order-status-timeout',
+    );
+  }
+
+  async function createShiftNoteDocument(note: Omit<ShiftNote, 'id' | 'createdAt'>): Promise<ShiftNote> {
+    const createdAt = new Date();
+    const payload = {
+      ...note,
+      createdAt,
+    };
+
+    try {
+      const id = await createFirestoreDocument('shiftNotes', payload);
+      return { id, ...note, createdAt };
+    } catch (restError) {
+      console.warn('REST handover save failed, trying Firebase SDK.', restError);
+    }
+
+    const ref = await withTimeout(
+      addDoc(collection(db, 'shiftNotes'), { ...note, createdAt: serverTimestamp() }),
+      'shift-note-timeout',
+    );
+    return { id: ref.id, ...note, createdAt };
+  }
+
   function handleProfileShortcut() {
     openAdminTab('settings');
     showDashboardNotice('Opened operator settings.');
@@ -1182,7 +1347,7 @@ export default function HouseApp() {
       order.id === orderId ? { ...order, status, isRead: true } : order
     )));
     try {
-      await updateDoc(doc(db, 'orders', orderId), { status, isRead: true, updatedAt: serverTimestamp() });
+      await updateOrderStatusDocument(orderId, status);
       await logAudit('status_change', 'order', orderId, { from: prev, to: status });
       showDashboardNotice(`Suite ${current.roomNumber} moved to ${formatStatusLabel(status)}.`);
     } catch (err) {
@@ -1235,6 +1400,31 @@ export default function HouseApp() {
     } finally {
       setBusyActionId(null);
     }
+  }
+
+  function handleMenuImageUpload(file: File | undefined) {
+    if (!file || !editingProduct) return;
+    if (!file.type.startsWith('image/')) {
+      showDashboardNotice('Please upload an image file for the menu item.');
+      return;
+    }
+    if (file.size > 1_200_000) {
+      showDashboardNotice('Image is too large. Use an image under 1.2 MB.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const image = typeof reader.result === 'string' ? reader.result : '';
+      if (!image) {
+        showDashboardNotice('Could not read the selected image.');
+        return;
+      }
+      setEditingProduct((current) => current ? { ...current, image } : current);
+      showDashboardNotice('Image uploaded into the menu editor.');
+    };
+    reader.onerror = () => showDashboardNotice('Could not read the selected image.');
+    reader.readAsDataURL(file);
   }
 
   async function saveProduct(editor: MenuEditorState) {
@@ -1361,17 +1551,29 @@ export default function HouseApp() {
   async function saveHandoverNote() {
     if (!handoverDraft.trim() || !identity) return;
     setIsSavingNote(true);
+    const noteInput = {
+      shift: activeShift,
+      note: handoverDraft.trim(),
+      authorName: identity.name,
+      authorUid: identity.uid,
+    };
     try {
-      const ref = await addDoc(collection(db, 'shiftNotes'), {
-        shift: activeShift,
-        note: handoverDraft.trim(),
-        authorName: identity.name,
-        authorUid: identity.uid,
-        createdAt: serverTimestamp(),
-      });
-      await logAudit('add_shift_note', 'shiftNote', ref.id, { shift: activeShift });
+      const savedNote = await createShiftNoteDocument(noteInput);
+      await logAudit('add_shift_note', 'shiftNote', savedNote.id, { shift: activeShift });
       setHandoverDraft('');
+      setShiftNotes((current) => mergeShiftNotes([savedNote, ...current]));
       showDashboardNotice(`Handover note posted to ${activeShift} shift.`);
+    } catch (err) {
+      console.error('Failed to save handover note to cloud, saving locally', err);
+      const localNote: ShiftNote = {
+        id: `local-${Date.now()}`,
+        ...noteInput,
+        createdAt: new Date(),
+      };
+      persistLocalShiftNote(localNote);
+      setShiftNotes((current) => mergeShiftNotes([localNote, ...current]));
+      setHandoverDraft('');
+      showDashboardNotice('Handover note saved on this dashboard. Cloud sync is unavailable.');
     } finally {
       setIsSavingNote(false);
     }
@@ -1859,7 +2061,7 @@ export default function HouseApp() {
           <header className="admin-topbar fixed top-0 right-0 z-40 bg-stone-50/80 backdrop-blur-md shadow-[0_20px_40px_rgba(26,28,27,0.06)] w-full md:w-[calc(100%-16rem)] px-8 py-6 flex justify-between items-center">
             <div className="flex-1 min-w-0">
               <div className="admin-shell-search relative">
-                <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-[#4e4639] text-[18px]">search</span>
+                <span className="admin-shell-search-icon material-symbols-outlined text-[#4e4639] text-[18px]">search</span>
                 <input
                   type="search"
                   value={shellSearch}
@@ -2330,10 +2532,10 @@ export default function HouseApp() {
                             <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]">Suite {feedbackSideOrder.roomNumber}</span>
                           </div>
                           <h3 className="font-['Noto_Serif'] text-lg text-[#1a1c1b] mb-3">
-                            {feedbackSideOrder.feedbackSummary || 'Guest experience note'}
+                            {feedbackSideOrder.feedbackSummary || 'Guest rating submitted'}
                           </h3>
                           <p className="font-['Manrope'] text-[#4e4639] text-sm leading-relaxed mb-8 flex-grow">
-                            "{feedbackSideOrder.feedbackText || feedbackSideOrder.feedbackSummary || 'Guest shared a concise dining impression.'}"
+                            "{feedbackSideOrder.feedbackText || feedbackSideOrder.feedbackSummary || 'No written comment provided.'}"
                           </p>
                           <div className="flex justify-between items-end border-t border-[#e3e2e0]/50 pt-4">
                             <p className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatFeedbackTime(feedbackSideOrder.createdAt)}</p>
@@ -2682,7 +2884,7 @@ export default function HouseApp() {
                         <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">Note</p>
                         <textarea
                           className="w-full bg-[#f4f3f1] border-none rounded-[18px] px-4 py-3 font-['Manrope'] text-sm text-[#1a1c1b] outline-none resize-none min-h-[140px] placeholder:text-[#4e4639]/50 ring-1 ring-[#ece5db]"
-                          placeholder="e.g. Suite 402 guest requires dairy-free options. Fryer #2 under maintenance until 18:00."
+                          placeholder="Write shift-critical context for the next operator."
                           value={handoverDraft}
                           onChange={(e) => setHandoverDraft(e.target.value)}
                         />
@@ -2763,9 +2965,9 @@ export default function HouseApp() {
                       <span className="material-symbols-outlined text-[#c5a059]" style={{ fontVariationSettings: "'FILL' 1" }}>schedule</span>
                       <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Operating Hours</h3>
                     </div>
-                    <div className="space-y-5">
+                    <div className="space-y-4">
                       {operatingHours.map((row) => (
-                        <div key={row.day} style={{ display: 'grid', gridTemplateColumns: '1.5rem 8rem 1fr auto 1fr', alignItems: 'center', gap: '0.75rem' }}>
+                        <div key={row.day} className="admin-hours-row">
                           <input
                             type="checkbox"
                             checked={row.enabled}
@@ -2774,23 +2976,23 @@ export default function HouseApp() {
                             )))}
                             className="h-5 w-5 accent-[#775a19]"
                           />
-                          <span className="font-['Manrope'] text-sm text-[#1a1c1b]">{row.day}</span>
+                          <span className="admin-hours-day font-['Manrope'] text-sm text-[#1a1c1b]">{row.day}</span>
                           <input
                             type="time"
                             value={row.opensAt}
                             onChange={(e) => setOperatingHours((current) => current.map((item) => (
                               item.day === row.day ? { ...item, opensAt: e.target.value } : item
                             )))}
-                            className="w-full bg-[#e9e8e6] px-3 py-2.5 text-center text-sm text-[#1a1c1b] outline-none border-b border-[#775a19]"
+                            className="admin-hours-input w-full bg-[#e9e8e6] px-3 py-2.5 text-center text-sm text-[#1a1c1b] outline-none border-b border-[#775a19]"
                           />
-                          <span className="text-sm text-[#5f5e5e] text-center">–</span>
+                          <span className="admin-hours-separator text-sm text-[#5f5e5e] text-center">–</span>
                           <input
                             type="time"
                             value={row.closesAt}
                             onChange={(e) => setOperatingHours((current) => current.map((item) => (
                               item.day === row.day ? { ...item, closesAt: e.target.value } : item
                             )))}
-                            className="w-full bg-[#e9e8e6] px-3 py-2.5 text-center text-sm text-[#1a1c1b] outline-none border-b border-[#775a19]"
+                            className="admin-hours-input w-full bg-[#e9e8e6] px-3 py-2.5 text-center text-sm text-[#1a1c1b] outline-none border-b border-[#775a19]"
                           />
                         </div>
                       ))}
@@ -3030,7 +3232,6 @@ export default function HouseApp() {
                 { label: 'Item Name', key: 'name' as const },
                 { label: 'Category', key: 'category' as const },
                 { label: 'Price', key: 'price' as const },
-                { label: 'Image URL', key: 'image' as const },
               ] as { label: string; key: keyof MenuEditorState }[]).map((field) => (
                 <UnderlineInput
                   key={field.key} id={field.key} label={field.label}
@@ -3038,6 +3239,32 @@ export default function HouseApp() {
                   onChange={(v) => setEditingProduct((c) => c ? { ...c, [field.key]: v } : c)}
                 />
               ))}
+              <div>
+                <UnderlineInput
+                  id="image"
+                  label="Image URL"
+                  value={editingProduct.image}
+                  placeholder="Paste image URL or upload a file"
+                  onChange={(v) => setEditingProduct((c) => c ? { ...c, image: v } : c)}
+                />
+              </div>
+              <div>
+                <label className="block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">Upload Image</label>
+                <label className="flex min-h-[3.25rem] cursor-pointer items-center justify-between gap-3 rounded-[14px] border border-dashed border-[#d1c5b4] bg-[#f4f3f1] px-4 py-3 font-['Manrope'] text-sm text-[#4e4639] transition hover:bg-[#ebe8e2]">
+                  <span className="truncate">Choose food photo</span>
+                  <span className="material-symbols-outlined text-[20px] text-[#775a19]">upload</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="sr-only"
+                    onChange={(e) => {
+                      handleMenuImageUpload(e.target.files?.[0]);
+                      e.currentTarget.value = '';
+                    }}
+                  />
+                </label>
+                <p className="mt-2 font-['Manrope'] text-[11px] leading-5 text-[#4e4639]/70">Uploads are stored in the menu image field. Use files under 1.2 MB.</p>
+              </div>
               {editingProduct.image?.trim() ? (
                 <div className="md:col-span-2">
                   <label className="block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">Image Preview</label>

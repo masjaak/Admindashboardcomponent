@@ -5,12 +5,12 @@ import { getAuth } from "firebase/auth";
 import { getFunctions } from "firebase/functions";
 
 // Your web app's Firebase configuration
-const firebaseConfig = {
-  apiKey: "AIzaSyD1IbtZeRunah6gK4JyV5s8wWDEr1TXJqE",
+export const firebaseConfig = {
+  apiKey: "AIzaSyD1IbtZeRumahNgK4JyV5s8wWDFrlTXJqF",
   authDomain: "hcsroomserviceapp.firebaseapp.com",
   projectId: "hcsroomserviceapp",
   storageBucket: "hcsroomserviceapp.firebasestorage.app",
-  messagingSenderId: "949008465266",
+  messagingSenderId: "949808465266",
   appId: "1:949008465266:web:4609a0f650a8f9106071eb",
   measurementId: "G-VJ1MXRJ60X"
 };

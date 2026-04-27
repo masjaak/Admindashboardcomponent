@@ -389,10 +389,25 @@ body,
   min-width: 0;
 }
 
+.admin-shell-search-icon {
+  position: absolute;
+  left: 0.95rem;
+  top: 50%;
+  z-index: 1;
+  width: 1.35rem;
+  height: 1.35rem;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  line-height: 1 !important;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
 .admin-shell-search input {
   min-height: 3rem;
   border-radius: 999px !important;
-  padding: 0.75rem 3.35rem 0.75rem 2.9rem !important;
+  padding: 0.75rem 3.35rem 0.75rem 3.15rem !important;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.74), 0 12px 24px rgba(26, 28, 27, 0.045);
 }
 
@@ -427,6 +442,28 @@ body,
 .admin-page-handover .space-y-4 > div,
 .admin-page-settings .space-y-6 > section {
   border-radius: var(--am-radius-card) !important;
+}
+
+.admin-hours-row {
+  display: grid;
+  grid-template-columns: 1.5rem minmax(6.5rem, 8rem) minmax(7.5rem, 1fr) 1.25rem minmax(7.5rem, 1fr);
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.admin-hours-day {
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.admin-hours-input {
+  min-height: 2.75rem;
+  border-radius: 0.85rem 0.85rem 0.35rem 0.35rem !important;
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-hours-separator {
+  line-height: 1;
 }
 
 .admin-page-menu article {
@@ -802,6 +839,16 @@ body,
 
   .admin-shell-search input {
     min-height: 2.75rem;
+  }
+
+  .admin-hours-row {
+    grid-template-columns: 1.5rem minmax(5.5rem, 1fr);
+    gap: 0.75rem;
+  }
+
+  .admin-hours-input,
+  .admin-hours-separator {
+    grid-column: 2;
   }
 
   .admin-canvas {
