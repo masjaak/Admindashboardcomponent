@@ -10,6 +10,7 @@ import {
   orderBy,
   query,
   serverTimestamp,
+  setDoc,
   updateDoc,
 } from 'firebase/firestore';
 import { User, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
@@ -29,6 +30,7 @@ import { resolveAdminSession, type AdminRole } from '../../admin/session';
 
 type AdminTab = 'orders' | 'menu' | 'feedback' | 'revenue' | 'handover' | 'settings';
 type ShiftName = 'morning' | 'afternoon' | 'night';
+type OperatingDayName = 'Monday' | 'Tuesday' | 'Wednesday' | 'Thursday' | 'Friday' | 'Saturday' | 'Sunday';
 
 interface AdminIdentity {
   uid: string;
@@ -137,6 +139,20 @@ interface RevenueTrendPoint {
   value: number;
 }
 
+interface OperatingHour {
+  day: OperatingDayName;
+  enabled: boolean;
+  opensAt: string;
+  closesAt: string;
+}
+
+interface AlertPreference {
+  id: string;
+  title: string;
+  copy: string;
+  enabled: boolean;
+}
+
 const TERMINAL_STATUSES = new Set(['delivered', 'completed', 'cancelled']);
 const SLA_THRESHOLD_MS = 20 * 60 * 1000; // 20 minutes
 
@@ -160,6 +176,19 @@ const SHIFT_LABELS: Record<ShiftName, string> = {
 };
 
 const BRAND_LOGO_URL = 'https://i.ibb.co.com/B2YJXXG0/Logo-ciputra-copy.png';
+const OPERATING_DAYS: OperatingDayName[] = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const DEFAULT_OPERATING_HOURS: OperatingHour[] = OPERATING_DAYS.map((day) => ({
+  day,
+  enabled: true,
+  opensAt: '06:00',
+  closesAt: '23:30',
+}));
+const DEFAULT_ALERT_PREFERENCES: AlertPreference[] = [
+  { id: 'newOrderChime', title: 'New Order Chime', copy: 'Audible alert on kitchen tablets.', enabled: true },
+  { id: 'vipGuestAlert', title: 'VIP Guest Alert', copy: 'SMS notification to duty manager.', enabled: true },
+  { id: 'delayedOrderWarning', title: 'Delayed Order Warning', copy: 'Alerts after prep time threshold.', enabled: true },
+  { id: 'dailyRevenueDigest', title: 'Daily Revenue Digest', copy: 'Email sent at end of service.', enabled: false },
+];
 
 const TAB_SEARCH_PLACEHOLDERS: Record<AdminTab, string> = {
   orders: 'Search orders...',
@@ -425,6 +454,34 @@ function getStaffEditorState(staff?: StaffAccount): StaffEditorState {
   };
 }
 
+function normalizeOperatingHours(value: unknown): OperatingHour[] {
+  if (!Array.isArray(value)) return DEFAULT_OPERATING_HOURS;
+  return DEFAULT_OPERATING_HOURS.map((fallback) => {
+    const row = value.find((item) => (
+      item && typeof item === 'object' && (item as Record<string, unknown>).day === fallback.day
+    )) as Record<string, unknown> | undefined;
+    return {
+      day: fallback.day,
+      enabled: typeof row?.enabled === 'boolean' ? row.enabled : fallback.enabled,
+      opensAt: typeof row?.opensAt === 'string' ? row.opensAt : fallback.opensAt,
+      closesAt: typeof row?.closesAt === 'string' ? row.closesAt : fallback.closesAt,
+    };
+  });
+}
+
+function normalizeAlertPreferences(value: unknown): AlertPreference[] {
+  if (!Array.isArray(value)) return DEFAULT_ALERT_PREFERENCES;
+  return DEFAULT_ALERT_PREFERENCES.map((fallback) => {
+    const row = value.find((item) => (
+      item && typeof item === 'object' && (item as Record<string, unknown>).id === fallback.id
+    )) as Record<string, unknown> | undefined;
+    return {
+      ...fallback,
+      enabled: typeof row?.enabled === 'boolean' ? row.enabled : fallback.enabled,
+    };
+  });
+}
+
 function downloadExcelFile(filename: string, mimeType: string, content: string): void {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -496,15 +553,23 @@ export default function HouseApp() {
   const [editingProduct, setEditingProduct] = useState<MenuEditorState | null>(null);
   const [notificationMessage, setNotificationMessage] = useState('');
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [feedbackSearch, setFeedbackSearch] = useState('');
   const [feedbackFilter, setFeedbackFilter] = useState<'all' | '5' | '4' | 'week'>('all');
   const [revenueRange, setRevenueRange] = useState<'daily' | 'weekly' | 'monthly'>('daily');
+  const [ordersAttentionOnly, setOrdersAttentionOnly] = useState(false);
+  const [isOrderIntakePaused, setIsOrderIntakePaused] = useState(false);
+  const [busyActionId, setBusyActionId] = useState<string | null>(null);
+  const [isSavingProduct, setIsSavingProduct] = useState(false);
 
   // Settings / QR
-  const [hotelId, setHotelId] = useState('atelier-meridian-demo');
+  const [hotelId, setHotelId] = useState('');
   const [stayId, setStayId] = useState('');
   const [roomNumber, setRoomNumber] = useState('');
   const [expiresInMinutes, setExpiresInMinutes] = useState('720');
+  const [operatingHours, setOperatingHours] = useState<OperatingHour[]>(DEFAULT_OPERATING_HOURS);
+  const [taxRate, setTaxRate] = useState('');
+  const [surchargeRate, setSurchargeRate] = useState('');
+  const [alertPreferences, setAlertPreferences] = useState<AlertPreference[]>(DEFAULT_ALERT_PREFERENCES);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [tokenResult, setTokenResult] = useState<{ qrUrl: string; rawToken: string; expiresAt: string } | null>(null);
   const [tokenStatus, setTokenStatus] = useState('');
   const [isGeneratingToken, setIsGeneratingToken] = useState(false);
@@ -562,6 +627,7 @@ export default function HouseApp() {
     ), 0);
     return Math.round(totalMinutes / timedOrders.length);
   }, [activeOrders]);
+  const activeSearchQuery = shellSearch.trim().toLowerCase();
   const filteredProducts = useMemo(() => {
     const q = (activeTab === 'menu' ? shellSearch : '').trim().toLowerCase();
     if (!q) return products;
@@ -711,9 +777,20 @@ export default function HouseApp() {
       .sort((a, b) => b.revenue - a.revenue)
       .slice(0, 3);
   }, [orders, revenuePeriodBounds]);
+  const visibleRevenueLeaders = useMemo(() => {
+    const queryText = activeTab === 'revenue' ? activeSearchQuery : '';
+    if (!queryText) return revenueLeaders;
+    return revenueLeaders.filter((item) => item.name.toLowerCase().includes(queryText));
+  }, [activeSearchQuery, activeTab, revenueLeaders]);
+  const visibleRevenueDistribution = useMemo(() => {
+    const queryText = activeTab === 'revenue' ? activeSearchQuery : '';
+    if (!queryText) return revenueDistribution;
+    return revenueDistribution.filter((segment) => segment.label.toLowerCase().includes(queryText));
+  }, [activeSearchQuery, activeTab, revenueDistribution]);
   const visibleOrders = useMemo(() => {
-    const queryText = '';
+    const queryText = activeTab === 'orders' ? activeSearchQuery : '';
     return activeOrders.filter((order) => {
+      if (ordersAttentionOnly && !(order.status === 'incoming' || !order.isRead || isOrderSlaBreached(order))) return false;
       if (!queryText) return true;
       return [
         order.roomNumber,
@@ -722,7 +799,7 @@ export default function HouseApp() {
         ...order.items.map((item) => item.name),
       ].some((value) => value.toLowerCase().includes(queryText));
     });
-  }, [activeOrders]);
+  }, [activeOrders, activeSearchQuery, activeTab, ordersAttentionOnly]);
   const visibleStaffAccounts = useMemo(() => {
     const queryText = (activeTab === 'settings' ? shellSearch : '').trim().toLowerCase();
     if (!queryText) return staffAccounts;
@@ -731,12 +808,20 @@ export default function HouseApp() {
     ));
   }, [activeTab, shellSearch, staffAccounts]);
   const shiftNotesByShift = useMemo(() => {
+    const queryText = activeTab === 'handover' ? activeSearchQuery : '';
     const out: Record<ShiftName, ShiftNote[]> = { morning: [], afternoon: [], night: [] };
-    for (const n of shiftNotes) out[n.shift].push(n);
+    for (const n of shiftNotes) {
+      const matchesSearch = !queryText || [
+        n.shift,
+        n.note,
+        n.authorName,
+      ].some((value) => value.toLowerCase().includes(queryText));
+      if (matchesSearch) out[n.shift].push(n);
+    }
     return out;
-  }, [shiftNotes]);
+  }, [activeSearchQuery, activeTab, shiftNotes]);
   const filteredFeedbackOrders = useMemo(() => {
-    const queryText = feedbackSearch.trim().toLowerCase();
+    const queryText = activeTab === 'feedback' ? activeSearchQuery : '';
     return feedbackOrders.filter((order) => {
       const matchesSearch = !queryText || [
         order.roomNumber,
@@ -753,7 +838,7 @@ export default function HouseApp() {
         );
       return matchesSearch && matchesFilter;
     });
-  }, [feedbackFilter, feedbackOrders, feedbackSearch]);
+  }, [activeSearchQuery, activeTab, feedbackFilter, feedbackOrders]);
   const feedbackHeroOrder = filteredFeedbackOrders[0] || null;
   const feedbackSideOrder = filteredFeedbackOrders[1] || null;
   const feedbackIssueOrder = filteredFeedbackOrders.find((order) => (
@@ -772,7 +857,12 @@ export default function HouseApp() {
 
   /* ── Auth ── */
   useEffect(() => {
+    const readyFallback = window.setTimeout(() => {
+      setAuthReady(true);
+    }, 2500);
+
     const unsub = onAuthStateChanged(auth, async (user) => {
+      window.clearTimeout(readyFallback);
       if (!user) { setIdentity(null); setAuthReady(true); return; }
       try {
         const resolved = await loadIdentity(user);
@@ -785,7 +875,10 @@ export default function HouseApp() {
         setAuthReady(true);
       }
     });
-    return () => unsub();
+    return () => {
+      window.clearTimeout(readyFallback);
+      unsub();
+    };
   }, []);
 
   /* ── Firestore subscriptions ── */
@@ -827,6 +920,36 @@ export default function HouseApp() {
     });
 
     return () => { unsubOrders(); unsubProducts(); unsubNotes(); unsubStaff(); };
+  }, [identity]);
+
+  useEffect(() => {
+    if (!identity) {
+      setHotelId('');
+      return;
+    }
+
+    const settingsId = identity.hotelId || identity.uid;
+    setHotelId(identity.hotelId);
+    let cancelled = false;
+
+    getDoc(doc(db, 'adminSettings', settingsId))
+      .then((snap) => {
+        if (cancelled || !snap.exists()) return;
+        const data = snap.data() as Record<string, unknown>;
+        setHotelId(typeof data.hotelId === 'string' ? data.hotelId : identity.hotelId);
+        setOperatingHours(normalizeOperatingHours(data.operatingHours));
+        setTaxRate(typeof data.taxRate === 'number' ? String(data.taxRate) : '');
+        setSurchargeRate(typeof data.surchargeRate === 'number' ? String(data.surchargeRate) : '');
+        setAlertPreferences(normalizeAlertPreferences(data.alertPreferences));
+      })
+      .catch((err) => {
+        console.error('Failed to load admin settings', err);
+        showDashboardNotice('Could not load saved settings. Check Firebase permission or connection.');
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [identity]);
 
   /* ── Nav ── */
@@ -871,7 +994,7 @@ export default function HouseApp() {
     }
     return {
       uid: session.uid, email: session.email, name: session.name, role: session.role,
-      hotelId: String(profile?.hotelId || 'atelier-meridian-demo'),
+      hotelId: String(profile?.hotelId || ''),
       username: String(profile?.username || profile?.email || session.email),
     };
   }
@@ -879,7 +1002,7 @@ export default function HouseApp() {
   /* Audit trail — writes one doc to auditLog for every staff action */
   async function logAudit(
     action: string,
-    targetType: 'order' | 'product' | 'guestSession' | 'shiftNote',
+    targetType: 'order' | 'product' | 'guestSession' | 'shiftNote' | 'settings',
     targetId: string,
     details?: Record<string, unknown>,
   ) {
@@ -920,48 +1043,208 @@ export default function HouseApp() {
     setIdentity(null);
   }
 
+  function showDashboardNotice(message: string) {
+    setNotificationMessage(message);
+  }
+
+  function openAdminTab(tab: AdminTab) {
+    setActiveTab(tab);
+    setShellSearch('');
+  }
+
+  function handleSupportConcierge() {
+    showDashboardNotice('Support Concierge ready. Escalate hotel operations issues through the duty manager channel.');
+  }
+
+  function handleNotificationCenter() {
+    if (unreadIncomingOrders.length > 0) {
+      openAdminTab('orders');
+      setOrdersAttentionOnly(true);
+      showDashboardNotice(`${unreadIncomingOrders.length} unread incoming order${unreadIncomingOrders.length === 1 ? '' : 's'} shown in the priority queue.`);
+      return;
+    }
+    showDashboardNotice('No unread incoming orders right now.');
+  }
+
+  function handleProfileShortcut() {
+    openAdminTab('settings');
+    showDashboardNotice('Opened operator settings.');
+  }
+
+  function toggleOrderPriorityFilter() {
+    setOrdersAttentionOnly((current) => {
+      const next = !current;
+      showDashboardNotice(next ? 'Showing incoming, unread, and delayed orders only.' : 'Showing all active orders.');
+      return next;
+    });
+  }
+
+  function toggleOrderIntake() {
+    setIsOrderIntakePaused((current) => {
+      const next = !current;
+      showDashboardNotice(next ? 'New order intake paused locally for this dashboard session.' : 'New order intake resumed locally for this dashboard session.');
+      return next;
+    });
+  }
+
+  function handleMessageGuest(order: DashboardOrder) {
+    if (order.phoneNumber) {
+      window.location.href = `sms:${order.phoneNumber}`;
+    }
+    showDashboardNotice(
+      order.phoneNumber
+        ? `Opening message composer for Suite ${order.roomNumber}. Contact: ${order.phoneNumber}`
+        : `No phone number is attached to Suite ${order.roomNumber}. Use hotel PMS contact lookup.`,
+    );
+  }
+
+  async function acknowledgeFeedback(order: DashboardOrder) {
+    await markAsRead(order.id);
+    showDashboardNotice(`Feedback from Suite ${order.roomNumber} acknowledged.`);
+  }
+
+  function replyToFeedback(order: DashboardOrder) {
+    showDashboardNotice(`Reply workflow prepared for Suite ${order.roomNumber}. Use guest contact details from the order record.`);
+  }
+
+  async function resolveFeedback(order: DashboardOrder) {
+    await markAsRead(order.id);
+    showDashboardNotice(`Follow-up for Suite ${order.roomNumber} marked for resolution.`);
+  }
+
+  async function saveSettingsDraft() {
+    if (!identity) return;
+    const settingsId = hotelId.trim() || identity.hotelId || identity.uid;
+    setIsSavingSettings(true);
+    try {
+      await setDoc(doc(db, 'adminSettings', settingsId), {
+        hotelId: hotelId.trim(),
+        operatingHours,
+        taxRate: Number(taxRate) || 0,
+        surchargeRate: Number(surchargeRate) || 0,
+        alertPreferences,
+        updatedAt: serverTimestamp(),
+        updatedBy: identity.uid,
+      }, { merge: true });
+      await logAudit('save_admin_settings', 'settings', settingsId, { hotelId: hotelId.trim() });
+      showDashboardNotice('Settings saved to Firebase.');
+    } catch (err) {
+      console.error('Failed to save settings', err);
+      showDashboardNotice('Could not save settings. Check Firebase permission or connection.');
+    } finally {
+      setIsSavingSettings(false);
+    }
+  }
+
   async function updateOrderStatus(orderId: string, status: string) {
-    const prev = orders.find((o) => o.id === orderId)?.status;
-    await updateDoc(doc(db, 'orders', orderId), { status, isRead: true, updatedAt: serverTimestamp() });
-    await logAudit('status_change', 'order', orderId, { from: prev, to: status });
+    const current = orders.find((o) => o.id === orderId);
+    if (!current) return;
+    const prev = current.status;
+    setBusyActionId(`status-${orderId}`);
+    setOrders((rows) => rows.map((order) => (
+      order.id === orderId ? { ...order, status, isRead: true } : order
+    )));
+    try {
+      await updateDoc(doc(db, 'orders', orderId), { status, isRead: true, updatedAt: serverTimestamp() });
+      await logAudit('status_change', 'order', orderId, { from: prev, to: status });
+      showDashboardNotice(`Suite ${current.roomNumber} moved to ${formatStatusLabel(status)}.`);
+    } catch (err) {
+      console.error('Failed to update order status', err);
+      setOrders((rows) => rows.map((order) => (
+        order.id === orderId ? { ...order, status: prev, isRead: current.isRead } : order
+      )));
+      showDashboardNotice(`Could not update Suite ${current.roomNumber}. Check Firebase permission or connection.`);
+    } finally {
+      setBusyActionId(null);
+    }
   }
 
   async function markAsRead(orderId: string) {
-    await updateDoc(doc(db, 'orders', orderId), { isRead: true, updatedAt: serverTimestamp() });
-    await logAudit('mark_read', 'order', orderId);
+    const current = orders.find((o) => o.id === orderId);
+    setBusyActionId(`read-${orderId}`);
+    setOrders((rows) => rows.map((order) => (
+      order.id === orderId ? { ...order, isRead: true } : order
+    )));
+    try {
+      await updateDoc(doc(db, 'orders', orderId), { isRead: true, updatedAt: serverTimestamp() });
+      await logAudit('mark_read', 'order', orderId);
+    } catch (err) {
+      console.error('Failed to mark order as read', err);
+      if (current) {
+        setOrders((rows) => rows.map((order) => (
+          order.id === orderId ? { ...order, isRead: current.isRead } : order
+        )));
+      }
+      showDashboardNotice('Could not update read state. Check Firebase permission or connection.');
+    } finally {
+      setBusyActionId(null);
+    }
   }
 
   async function toggleProductAvailability(product: MenuProduct) {
     const next = !product.isAvailable;
-    await updateDoc(doc(db, 'products', product.id), {
-      isAvailable: next,
-      unavailableReason: next ? '' : (product.unavailableReason || 'Temporarily unavailable'),
-      updatedAt: serverTimestamp(),
-    });
-    await logAudit(next ? 'set_available' : 'set_unavailable', 'product', product.id, { name: product.name });
+    setBusyActionId(`product-${product.id}`);
+    try {
+      await updateDoc(doc(db, 'products', product.id), {
+        isAvailable: next,
+        unavailableReason: next ? '' : (product.unavailableReason || 'Temporarily unavailable'),
+        updatedAt: serverTimestamp(),
+      });
+      await logAudit(next ? 'set_available' : 'set_unavailable', 'product', product.id, { name: product.name });
+      showDashboardNotice(`${product.name} is now ${next ? 'available' : 'offline'}.`);
+    } catch (err) {
+      console.error('Failed to update product availability', err);
+      showDashboardNotice(`Could not update ${product.name}. Check Firebase permission or connection.`);
+    } finally {
+      setBusyActionId(null);
+    }
   }
 
   async function saveProduct(editor: MenuEditorState) {
+    if (!editor.name.trim()) {
+      showDashboardNotice('Menu item name is required.');
+      return;
+    }
+    setIsSavingProduct(true);
     const payload = {
       name: editor.name.trim(), category: editor.category.trim(),
       price: Number(editor.price) || 0, description: editor.description.trim(),
       image: editor.image.trim(), isAvailable: editor.isAvailable,
       unavailableReason: editor.unavailableReason.trim(), updatedAt: serverTimestamp(),
     };
-    if (editor.id) {
-      await updateDoc(doc(db, 'products', editor.id), payload);
-      await logAudit('edit_product', 'product', editor.id, { name: editor.name });
-    } else {
-      const ref = await addDoc(collection(db, 'products'), { ...payload, createdAt: serverTimestamp() });
-      await logAudit('add_product', 'product', ref.id, { name: editor.name });
+    try {
+      if (editor.id) {
+        await updateDoc(doc(db, 'products', editor.id), payload);
+        await logAudit('edit_product', 'product', editor.id, { name: editor.name });
+        showDashboardNotice(`${editor.name.trim()} updated in Menu Manager.`);
+      } else {
+        const ref = await addDoc(collection(db, 'products'), { ...payload, createdAt: serverTimestamp() });
+        await logAudit('add_product', 'product', ref.id, { name: editor.name });
+        showDashboardNotice(`${editor.name.trim()} added to Menu Manager.`);
+      }
+      setEditingProduct(null);
+    } catch (err) {
+      console.error('Failed to save menu item', err);
+      showDashboardNotice('Could not save menu item. Check Firebase permission or connection.');
+    } finally {
+      setIsSavingProduct(false);
     }
-    setEditingProduct(null);
   }
 
   async function deleteProduct(productId: string) {
     const product = products.find((p) => p.id === productId);
-    await deleteDoc(doc(db, 'products', productId));
-    await logAudit('delete_product', 'product', productId, { name: product?.name });
+    if (!window.confirm(`Remove ${product?.name || 'this menu item'} from Menu Manager?`)) return;
+    setBusyActionId(`delete-product-${productId}`);
+    try {
+      await deleteDoc(doc(db, 'products', productId));
+      await logAudit('delete_product', 'product', productId, { name: product?.name });
+      showDashboardNotice(`${product?.name || 'Menu item'} removed from Menu Manager.`);
+    } catch (err) {
+      console.error('Failed to delete product', err);
+      showDashboardNotice('Could not remove menu item. Check Firebase permission or connection.');
+    } finally {
+      setBusyActionId(null);
+    }
   }
 
   async function handleGenerateQr() {
@@ -988,8 +1271,13 @@ export default function HouseApp() {
 
   async function copyTokenUrl() {
     if (!tokenResult?.qrUrl) return;
-    await navigator.clipboard.writeText(tokenResult.qrUrl);
-    setTokenStatus('Guest QR URL copied to clipboard.');
+    try {
+      await navigator.clipboard.writeText(tokenResult.qrUrl);
+      setTokenStatus('Guest QR URL copied to clipboard.');
+    } catch (err) {
+      console.error('Failed to copy QR URL', err);
+      setTokenStatus('Could not copy automatically. Select and copy the Guest URL from Print Pack.');
+    }
   }
 
   async function handleRevokeGuest(guestUid: string) {
@@ -997,14 +1285,24 @@ export default function HouseApp() {
     try {
       await revokeGuestSessionAsAdmin(guestUid);
       await logAudit('revoke_guest_session', 'guestSession', guestUid);
+      showDashboardNotice('Guest session revoked. The guest must request a new QR access link.');
+    } catch (err) {
+      console.error('Failed to revoke guest session', err);
+      showDashboardNotice('Could not revoke guest session. Check Firebase callable functions and permission.');
     } finally {
       setRevokingSessionId(null);
     }
   }
 
-  function exportRevenue() {
+  async function exportRevenue() {
     const exp = buildRevenueExport(revenueSummary.rows, new Date(`${selectedDate}T12:00:00`));
     downloadExcelFile(exp.filename, exp.mimeType, exp.content);
+    try {
+      await navigator.clipboard.writeText(exp.content);
+      showDashboardNotice(`${exp.filename} prepared. Report content was also copied to clipboard for iPad fallback.`);
+    } catch {
+      showDashboardNotice(`${exp.filename} prepared. If iPad does not show a Files prompt, run export from desktop Safari.`);
+    }
   }
 
   async function saveHandoverNote() {
@@ -1027,6 +1325,10 @@ export default function HouseApp() {
 
   async function saveStaffAccount(editor: StaffEditorState) {
     if (!identity) return;
+    if (!hotelId.trim()) {
+      setTeamStatus('Hotel ID is required before creating or updating staff access.');
+      return;
+    }
     setIsSavingStaff(true);
     setTeamStatus('');
     try {
@@ -1066,6 +1368,8 @@ export default function HouseApp() {
   }
 
   async function removeStaffAccount(uid: string) {
+    const staff = staffAccounts.find((account) => account.uid === uid);
+    if (!window.confirm(`Remove ${staff?.name || 'this staff account'} from admin access?`)) return;
     setTeamStatus('');
     try {
       await deleteAdminUser(uid);
@@ -1095,7 +1399,17 @@ export default function HouseApp() {
 
   /* ─────────────────── RENDER ─────────────────── */
 
-  if (!authReady) return <div className="min-h-screen bg-[#faf9f7]" />;
+  if (!authReady) {
+    return (
+      <div className="min-h-screen bg-[#faf9f7] text-[#1a1c1b] flex items-center justify-center" style={{ fontFamily: "'Manrope', sans-serif" }}>
+        <div className="rounded-lg bg-white px-8 py-7 shadow-[0_20px_40px_rgba(26,28,27,0.06)]">
+          <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.22em] text-[#775a19]">Atelier Meridian</p>
+          <h1 className="mt-2 font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Preparing Admin Dashboard</h1>
+          <p className="mt-2 font-['Manrope'] text-sm text-[#5f5e5e]">Checking operator session...</p>
+        </div>
+      </div>
+    );
+  }
 
   /* ── Login ── */
   if (!identity) {
@@ -1325,6 +1639,7 @@ export default function HouseApp() {
                   </label>
                   <button
                     type="button"
+                    onClick={() => setAuthError('Password reset is handled by the duty manager through Admin Team Access.')}
                     style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', color: 'rgba(255,255,255,0.65)', textDecoration: 'underline', textUnderlineOffset: '3px', padding: 0 }}
                   >
                     Forgot password?
@@ -1380,10 +1695,15 @@ export default function HouseApp() {
 
               {/* Footer links inside card */}
               <div style={{ marginTop: '1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'rgba(255,255,255,0.4)' }}>
-                <span>© 2025 Atelier Meridian</span>
+                <span>© {new Date().getFullYear()} Atelier Meridian</span>
                 <div style={{ display: 'flex', gap: '1.25rem' }}>
                   {['Privacy', 'Support'].map((link) => (
-                    <button key={link} type="button" style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'rgba(255,255,255,0.4)', padding: 0 }}>
+                    <button
+                      key={link}
+                      type="button"
+                      onClick={() => setAuthError(link === 'Privacy' ? 'Privacy policy is managed by the hotel operations team.' : 'Support requests are handled by the duty manager.')}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'rgba(255,255,255,0.4)', padding: 0 }}
+                    >
                       {link}
                     </button>
                   ))}
@@ -1413,10 +1733,10 @@ export default function HouseApp() {
 
   /* ── Dashboard ── */
   return (
-    <div className="min-h-screen bg-[#faf9f7] text-[#1a1c1b] flex" style={{ fontFamily: "'Manrope', sans-serif" }}>
+    <div className="admin-dashboard min-h-screen bg-[#faf9f7] text-[#1a1c1b] flex" style={{ fontFamily: "'Manrope', sans-serif" }}>
 
         {/* ── Sidebar ── */}
-        <aside className="hidden md:flex fixed left-0 top-0 h-full w-64 flex-col bg-stone-100 py-10 z-50">
+        <aside className="admin-sidebar hidden md:flex fixed left-0 top-0 h-full w-64 flex-col bg-stone-100 py-10 z-50">
           <div className="px-8 mb-12">
             <h1 className="font-['Noto_Serif'] text-lg font-bold text-amber-900">Atelier Meridian</h1>
             <p className="mt-1 font-['Manrope'] font-medium text-sm tracking-wide text-stone-500">In-Room Dining Admin</p>
@@ -1434,7 +1754,7 @@ export default function HouseApp() {
                           ? 'bg-white text-amber-900 rounded-l-full font-bold'
                           : 'text-stone-600 hover:bg-white/50'
                       }`}
-                      onClick={() => setActiveTab(id)}
+                      onClick={() => openAdminTab(id)}
                       type="button"
                       >
                       <span className="flex items-center gap-4">
@@ -1462,6 +1782,7 @@ export default function HouseApp() {
           <div className="px-8 mt-auto">
             <button
               className="w-full py-3 px-4 rounded border border-[#d1c5b4]/30 text-[#775a19] font-['Manrope'] font-medium text-sm hover:bg-[#f4f3f1] transition-colors flex items-center justify-center gap-2"
+              onClick={handleSupportConcierge}
               type="button"
             >
               <span className="material-symbols-outlined text-[18px]">headset_mic</span>
@@ -1471,55 +1792,45 @@ export default function HouseApp() {
         </aside>
 
         {/* ── Main ── */}
-        <main className="flex-1 md:ml-64 relative min-h-screen">
+        <main className="admin-main flex-1 md:ml-64 relative min-h-screen">
 
           {/* Top bar */}
-          <header className="fixed top-0 right-0 z-40 bg-stone-50/80 backdrop-blur-md shadow-[0_20px_40px_rgba(26,28,27,0.06)] w-full md:w-[calc(100%-16rem)] px-8 py-6 flex justify-between items-center">
-            <div className="flex-1">
-              {activeTab === 'revenue' ? (
-                <h2 className="font-['Noto_Serif'] font-light tracking-tight text-[#1a1c1b] text-2xl hidden md:block">Revenue Analytics</h2>
-              ) : null}
-              {activeTab === 'menu' ? (
-                <div className="relative w-64 md:w-96 hidden md:block">
-                  <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[#4e4639] text-[18px]">search</span>
-                  <input
-                    type="text"
-                    value={shellSearch}
-                    onChange={(e) => setShellSearch(e.target.value)}
-                    placeholder={TAB_SEARCH_PLACEHOLDERS[activeTab]}
-                    className="w-full pl-10 pr-4 py-2 bg-[#e9e8e6] border-none rounded-full font-['Manrope'] text-sm text-[#1a1c1b] outline-none focus:bg-white focus:ring-1 focus:ring-[#775a19] transition-colors"
-                  />
-                </div>
-              ) : null}
-              {activeTab === 'settings' ? (
-                <div className="font-['Noto_Serif'] text-2xl tracking-tight text-amber-900 hidden md:block">Atelier Meridian</div>
-              ) : null}
+          <header className="admin-topbar fixed top-0 right-0 z-40 bg-stone-50/80 backdrop-blur-md shadow-[0_20px_40px_rgba(26,28,27,0.06)] w-full md:w-[calc(100%-16rem)] px-8 py-6 flex justify-between items-center">
+            <div className="flex-1 min-w-0">
+              <div className="admin-shell-search relative hidden md:block">
+                <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-[#4e4639] text-[18px]">search</span>
+                <input
+                  type="search"
+                  value={shellSearch}
+                  onChange={(e) => setShellSearch(e.target.value)}
+                  placeholder={TAB_SEARCH_PLACEHOLDERS[activeTab]}
+                  className="w-full border-none bg-[#e9e8e6] font-['Manrope'] text-sm text-[#1a1c1b] outline-none transition-colors placeholder:text-[#4e4639]/50"
+                />
+                {shellSearch ? (
+                  <button
+                    aria-label="Clear search"
+                    className="admin-shell-search-clear"
+                    onClick={() => setShellSearch('')}
+                    type="button"
+                  >
+                    <span className="material-symbols-outlined text-[17px]">close</span>
+                  </button>
+                ) : null}
+              </div>
             </div>
             <div className="flex items-center gap-6">
-              {activeTab === 'settings' ? (
-                <div className="relative hidden md:block">
-                  <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[#4e4639] text-[18px]">search</span>
-                  <input
-                    type="text"
-                    value={shellSearch}
-                    onChange={(e) => setShellSearch(e.target.value)}
-                    placeholder={TAB_SEARCH_PLACEHOLDERS[activeTab]}
-                    className="w-64 pl-10 pr-4 py-2 bg-[#e9e8e6] rounded-full font-['Manrope'] text-sm text-[#1a1c1b] outline-none focus:ring-1 focus:ring-[#775a19] focus:bg-white transition-colors border-none"
-                  />
-                </div>
-              ) : null}
-              <button className="text-amber-800 hover:text-amber-700 transition-colors duration-300 active:scale-95 transform" type="button">
+              <button className="text-amber-800 hover:text-amber-700 transition-colors duration-300 active:scale-95 transform" onClick={handleNotificationCenter} type="button" aria-label="Open priority notifications">
                 <span className="material-symbols-outlined text-[24px]">notifications</span>
               </button>
-              <button className="text-amber-800 hover:text-amber-700 transition-colors duration-300 active:scale-95 transform" type="button">
+              <button className="text-amber-800 hover:text-amber-700 transition-colors duration-300 active:scale-95 transform" onClick={handleProfileShortcut} type="button" aria-label="Open operator settings">
                 <span className="material-symbols-outlined text-[24px]">account_circle</span>
               </button>
             </div>
           </header>
 
-          <div className="pt-32 px-8 md:px-12 pb-24 max-w-7xl mx-auto">
+          <div className="admin-canvas pt-32 px-8 md:px-12 pb-24 max-w-7xl mx-auto">
 
-            <div className="mb-8 md:hidden overflow-x-auto">
+            <div className="admin-mobile-nav mb-8 md:hidden overflow-x-auto">
               <div className="inline-flex min-w-max gap-2 rounded-full bg-white/78 p-1.5 shadow-[0_16px_34px_rgba(26,28,27,0.06)] ring-1 ring-[#efe8de]">
                 {navItems.map(({ id, label, icon, badge }) => {
                   const isActive = activeTab === id;
@@ -1527,7 +1838,7 @@ export default function HouseApp() {
                     <button
                       key={id}
                       type="button"
-                      onClick={() => setActiveTab(id)}
+                      onClick={() => openAdminTab(id)}
                       className={`flex items-center gap-2 rounded-full px-4 py-2.5 font-['Manrope'] text-xs font-semibold tracking-wide transition ${
                         isActive ? 'bg-[#1a1c1b] text-white' : 'text-[#4e4639]'
                       }`}
@@ -1545,13 +1856,13 @@ export default function HouseApp() {
 
             {/* Notification banner */}
             {notificationMessage ? (
-              <div className="mb-8 flex items-center justify-between rounded-[18px] bg-[#1a1c1b] px-5 py-3 shadow-[0_18px_36px_rgba(26,28,27,0.12)]">
+              <div className="admin-notification-bar mb-8 flex items-center justify-between rounded-[18px] bg-[#1a1c1b] px-5 py-3 shadow-[0_18px_36px_rgba(26,28,27,0.12)]">
                 <div className="flex items-center gap-3">
                   <span className="material-symbols-outlined text-[#c5a059] text-[20px] shrink-0">notifications</span>
                   <p className="font-['Manrope'] text-sm text-white">{notificationMessage}</p>
                 </div>
                 <button
-                  className="text-white/60 hover:text-white text-xs font-['Manrope'] uppercase tracking-widest ml-4 shrink-0"
+                  className="admin-notification-dismiss text-white/60 hover:text-white text-xs font-['Manrope'] uppercase tracking-widest ml-4 shrink-0"
                   onClick={() => setNotificationMessage('')} type="button"
                 >
                   Dismiss
@@ -1563,18 +1874,26 @@ export default function HouseApp() {
                 LIVE ORDERS
             ══════════════════════════════════════════ */}
             {activeTab === 'orders' ? (
-              <div>
+              <div className="admin-page admin-page-orders">
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6 mb-12">
                   <div>
                     <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight font-semibold">Live Orders</h2>
                     <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm tracking-wide">Currently monitoring active in-room dining requests.</p>
                   </div>
                   <div className="flex gap-4">
-                    <button className="font-['Manrope'] text-sm font-semibold tracking-wide text-[#775a19] bg-[#c5a059]/20 px-6 py-2 rounded-full hover:bg-[#c5a059]/30 transition-colors" type="button">
-                      Filter
+                    <button
+                      className="font-['Manrope'] text-sm font-semibold tracking-wide text-[#775a19] bg-[#c5a059]/20 px-6 py-2 rounded-full hover:bg-[#c5a059]/30 transition-colors"
+                      onClick={toggleOrderPriorityFilter}
+                      type="button"
+                    >
+                      {ordersAttentionOnly ? 'All Orders' : 'Priority Filter'}
                     </button>
-                    <button className="font-['Manrope'] text-sm font-semibold tracking-wide text-white bg-[#775a19] px-6 py-2 rounded hover:bg-[#775a19]/90 transition-colors" type="button">
-                      Pause New Orders
+                    <button
+                      className={`font-['Manrope'] text-sm font-semibold tracking-wide text-white px-6 py-2 rounded hover:bg-[#775a19]/90 transition-colors ${isOrderIntakePaused ? 'bg-[#1a1c1b]' : 'bg-[#775a19]'}`}
+                      onClick={toggleOrderIntake}
+                      type="button"
+                    >
+                      {isOrderIntakePaused ? 'Resume New Orders' : 'Pause New Orders'}
                     </button>
                   </div>
                 </div>
@@ -1662,6 +1981,7 @@ export default function HouseApp() {
                               <div className="flex flex-wrap items-center gap-3 justify-end">
                                 <button
                                   className="font-['Manrope'] text-sm text-[#775a19] px-3 py-2.5 transition-colors hover:text-[#5d4201]"
+                                  onClick={() => handleMessageGuest(order)}
                                   type="button"
                                 >
                                   Message Guest
@@ -1673,18 +1993,20 @@ export default function HouseApp() {
                                         ? 'border border-[#775a19] text-[#775a19] hover:bg-[#775a19]/5'
                                         : 'bg-[#8b6418] text-white hover:bg-[#775a19]'
                                     }`}
+                                    disabled={busyActionId === `status-${order.id}`}
                                     onClick={() => updateOrderStatus(order.id, primaryAction.nextStatus)}
                                     type="button"
                                   >
-                                    {primaryAction.label}
+                                    {busyActionId === `status-${order.id}` ? 'Updating...' : primaryAction.label}
                                   </button>
                                 ) : null}
                                 {!primaryAction ? (
                                   <button
                                     className="font-['Manrope'] text-sm font-medium bg-[#efeeec] text-[#1a1c1b] px-4 py-2 rounded transition-colors hover:bg-[#e9e8e6]"
+                                    disabled={busyActionId === `read-${order.id}`}
                                     onClick={() => markAsRead(order.id)} type="button"
                                   >
-                                    Update Status
+                                    {busyActionId === `read-${order.id}` ? 'Updating...' : 'Update Status'}
                                   </button>
                                 ) : null}
                                 {sla && (order.accessTokenId || order.guestUid) ? (
@@ -1695,7 +2017,7 @@ export default function HouseApp() {
                                     type="button"
                                   >
                                     <span className="material-symbols-outlined text-[16px]">block</span>
-                                    Revoke
+                                    {revokingSessionId === (order.accessTokenId || order.guestUid) ? 'Revoking...' : 'Revoke'}
                                   </button>
                                 ) : null}
                               </div>
@@ -1713,7 +2035,7 @@ export default function HouseApp() {
                 MENU MANAGER
             ══════════════════════════════════════════ */}
             {activeTab === 'menu' ? (
-              <div>
+              <div className="admin-page admin-page-menu">
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-14 gap-6">
                   <div>
                     <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight mb-2">Curated Offerings</h2>
@@ -1793,6 +2115,7 @@ export default function HouseApp() {
                             </label>
                             <button
                               className="text-[#ba1a1a] hover:text-[#93000a] transition-colors p-2 rounded-full hover:bg-[#ffdad6]"
+                              disabled={busyActionId === `delete-product-${product.id}`}
                               onClick={() => deleteProduct(product.id)} type="button"
                             >
                               <span className="material-symbols-outlined text-[20px]">delete</span>
@@ -1816,7 +2139,7 @@ export default function HouseApp() {
                 FEEDBACK
             ══════════════════════════════════════════ */}
             {activeTab === 'feedback' ? (
-              <div>
+              <div className="admin-page admin-page-feedback">
                 <div className="flex flex-col md:flex-row md:justify-between md:items-end mb-10 gap-6">
                   <div className="max-w-2xl">
                     <span className="uppercase tracking-[0.1em] text-xs font-bold text-[#775a19] mb-3 block font-['Manrope']">Guest Relations</span>
@@ -1843,8 +2166,8 @@ export default function HouseApp() {
                     <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-[#4e4639]">search</span>
                     <input
                       type="text"
-                      value={feedbackSearch}
-                      onChange={(e) => setFeedbackSearch(e.target.value)}
+                      value={shellSearch}
+                      onChange={(e) => setShellSearch(e.target.value)}
                       placeholder="Search suite, keyword, or guest..."
                       className="w-full rounded-[14px] bg-[#e9e8e6] py-4 pl-12 pr-4 font-['Manrope'] text-sm text-[#1a1c1b] outline-none transition focus:bg-white focus:shadow-[0_4px_20px_rgba(26,28,27,0.04)]"
                     />
@@ -1902,7 +2225,7 @@ export default function HouseApp() {
                                 ))}
                               </div>
                               <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">
-                                {feedbackHeroOrder.feedbackSummary || 'Exceptional Breakfast Service'}
+                                {feedbackHeroOrder.feedbackSummary || 'Guest rating submitted'}
                               </h3>
                             </div>
                             <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639] bg-[#f4f3f1] px-3 py-1 rounded">
@@ -1922,7 +2245,7 @@ export default function HouseApp() {
                                 <p className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatFeedbackTime(feedbackHeroOrder.createdAt)}</p>
                               </div>
                             </div>
-                            <button className="text-[#775a19] font-['Manrope'] text-sm uppercase tracking-widest hover:text-[#c5a059] transition-colors" type="button">
+                            <button className="text-[#775a19] font-['Manrope'] text-sm uppercase tracking-widest hover:text-[#c5a059] transition-colors" onClick={() => acknowledgeFeedback(feedbackHeroOrder)} type="button">
                               Acknowledge
                             </button>
                           </div>
@@ -1949,14 +2272,14 @@ export default function HouseApp() {
                             <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]">Suite {feedbackSideOrder.roomNumber}</span>
                           </div>
                           <h3 className="font-['Noto_Serif'] text-lg text-[#1a1c1b] mb-3">
-                            {feedbackSideOrder.feedbackSummary || 'Lovely, but slightly cold'}
+                            {feedbackSideOrder.feedbackSummary || 'Guest experience note'}
                           </h3>
                           <p className="font-['Manrope'] text-[#4e4639] text-sm leading-relaxed mb-8 flex-grow">
                             "{feedbackSideOrder.feedbackText || feedbackSideOrder.feedbackSummary || 'Guest shared a concise dining impression.'}"
                           </p>
                           <div className="flex justify-between items-end border-t border-[#e3e2e0]/50 pt-4">
                             <p className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatFeedbackTime(feedbackSideOrder.createdAt)}</p>
-                            <button className="text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest hover:text-[#c5a059] transition-colors" type="button">
+                            <button className="text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest hover:text-[#c5a059] transition-colors" onClick={() => replyToFeedback(feedbackSideOrder)} type="button">
                               Reply
                             </button>
                           </div>
@@ -1986,7 +2309,7 @@ export default function HouseApp() {
                               <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]">Suite {feedbackIssueOrder.roomNumber}</span>
                             </div>
                             <h3 className="font-['Noto_Serif'] text-lg text-[#1a1c1b] mb-3">
-                              {feedbackIssueOrder.feedbackSummary || 'Delayed Service'}
+                              {feedbackIssueOrder.feedbackSummary || 'Review requires follow-up'}
                             </h3>
                             <p className="font-['Manrope'] text-[#4e4639] text-sm leading-relaxed mb-8 flex-grow">
                               "{feedbackIssueOrder.feedbackText || 'Action required on this guest experience.'}"
@@ -1996,7 +2319,7 @@ export default function HouseApp() {
                                 <p className="font-['Manrope'] text-xs text-[#ba1a1a] font-medium">Action Required</p>
                                 <p className="font-['Manrope'] text-xs text-[#5f5e5e]">{formatFeedbackTime(feedbackIssueOrder.createdAt)}</p>
                               </div>
-                              <button className="text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest hover:bg-[#ba1a1a]/5 px-2 py-1 rounded transition-colors" type="button">
+                              <button className="text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest hover:bg-[#ba1a1a]/5 px-2 py-1 rounded transition-colors" onClick={() => resolveFeedback(feedbackIssueOrder)} type="button">
                                 Resolve
                               </button>
                             </div>
@@ -2024,7 +2347,7 @@ export default function HouseApp() {
                               </div>
                               <div className="mb-6 flex items-center justify-between gap-4">
                                 <h3 className="font-['Noto_Serif'] text-lg text-[#1a1c1b]">
-                                  {feedbackStoryOrder.feedbackSummary || 'A Perfect Late Night Suppertime'}
+                                  {feedbackStoryOrder.feedbackSummary || 'Dining experience recap'}
                                 </h3>
                                 <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639] bg-[#f4f3f1] px-3 py-1 rounded">
                                   Suite {feedbackStoryOrder.roomNumber}
@@ -2047,7 +2370,7 @@ export default function HouseApp() {
                           </div>
                           <div className="mt-6 flex justify-between items-center w-full md:hidden">
                             <p className="font-['Manrope'] text-xs text-[#5f5e5e]">{formatFeedbackTime(feedbackStoryOrder.createdAt)}</p>
-                            <button className="text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest hover:text-[#c5a059] transition-colors" type="button">
+                            <button className="text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest hover:text-[#c5a059] transition-colors" onClick={() => acknowledgeFeedback(feedbackStoryOrder)} type="button">
                               Acknowledge
                             </button>
                           </div>
@@ -2064,7 +2387,7 @@ export default function HouseApp() {
             ══════════════════════════════════════════ */}
             {activeTab === 'revenue' ? (
               <ManagerOnly role={identity.role}>
-                <div>
+                <div className="admin-page admin-page-revenue">
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-12">
                     <div className="flex gap-2 bg-[#f4f3f1] p-1 rounded-full border border-[#e3e2e0]/50">
                       {(['daily', 'weekly', 'monthly'] as const).map((range) => (
@@ -2136,7 +2459,7 @@ export default function HouseApp() {
                   <div className="w-full bg-white rounded-xl p-8 mb-12 shadow-[0_20px_40px_rgba(26,28,27,0.06)] min-h-[400px] flex flex-col">
                     <div className="mb-8 flex items-center justify-between gap-4">
                       <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Revenue Trend</h3>
-                      <button className="text-[#5f5e5e]" type="button">
+                      <button className="text-[#5f5e5e]" onClick={() => showDashboardNotice(`Revenue range: ${revenueRange}. Export Report downloads the current data set.`)} type="button" aria-label="Show revenue chart options">
                         <span className="material-symbols-outlined">more_horiz</span>
                       </button>
                     </div>
@@ -2176,7 +2499,7 @@ export default function HouseApp() {
                     <div>
                       <h3 className="mb-6 border-b border-[#ece5db] pb-4 font-['Noto_Serif'] text-xl text-[#1a1c1b]">Top Performing Signatures</h3>
                       <div className="space-y-6">
-                        {revenueLeaders.map((item) => (
+                        {visibleRevenueLeaders.map((item) => (
                           <div key={item.name} className="flex items-center justify-between p-4 bg-white rounded-lg hover:bg-[#f4f3f1] transition-colors group cursor-pointer shadow-[0_20px_40px_rgba(26,28,27,0.06)]">
                             <div className="flex items-center gap-4">
                               <div className="w-16 h-16 rounded overflow-hidden relative bg-[#e3e2e0]">
@@ -2194,14 +2517,14 @@ export default function HouseApp() {
                               </div>
                             </div>
                             <div className="text-right">
-                              <p className={`font-['Noto_Serif'] text-lg ${item === revenueLeaders[0] ? 'text-[#775a19]' : 'text-[#1a1c1b]'}`}>{formatIdr(item.revenue)}</p>
+                              <p className={`font-['Noto_Serif'] text-lg ${item === visibleRevenueLeaders[0] ? 'text-[#775a19]' : 'text-[#1a1c1b]'}`}>{formatIdr(item.revenue)}</p>
                               <p className="font-['Manrope'] text-xs text-[#5f5e5e]">
                                 {revenueOverview.revenue ? `${((item.revenue / revenueOverview.revenue) * 100).toFixed(1)}% of rev` : '0% of rev'}
                               </p>
                             </div>
                           </div>
                         ))}
-                        {revenueLeaders.length === 0 ? <p className="text-sm text-[#4e4639]">No signature data available yet.</p> : null}
+                        {visibleRevenueLeaders.length === 0 ? <p className="text-sm text-[#4e4639]">No signature data available for the current filter.</p> : null}
                       </div>
                     </div>
 
@@ -2209,7 +2532,7 @@ export default function HouseApp() {
                       <div>
                         <h3 className="mb-6 border-b border-[#ece5db] pb-4 font-['Noto_Serif'] text-xl text-[#1a1c1b]">Revenue Distribution</h3>
                         <div className="space-y-8 mt-8 px-4">
-                          {revenueDistribution.map((segment, index) => (
+                          {visibleRevenueDistribution.map((segment, index) => (
                             <div key={segment.label}>
                               <div className="mb-2 flex items-center justify-between gap-4 text-sm">
                                 <span className="font-medium text-[#1a1c1b]">{segment.label}</span>
@@ -2223,15 +2546,15 @@ export default function HouseApp() {
                               </div>
                             </div>
                           ))}
-                          {revenueDistribution.length === 0 ? <p className="text-sm text-[#4e4639]">No revenue distribution data available yet.</p> : null}
+                          {visibleRevenueDistribution.length === 0 ? <p className="text-sm text-[#4e4639]">No revenue distribution data available for the current filter.</p> : null}
                         </div>
                       </div>
 
                       <div className="mt-12 bg-[#f4f3f1] p-6 rounded-lg border border-[#e3e2e0]/30">
                         <p className="mb-3 font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e]">Insight</p>
                         <p className="font-['Manrope'] text-sm leading-7 text-[#4e4639]">
-                          {revenueDistribution[0]
-                            ? `${revenueDistribution[0].label} currently leads revenue contribution at ${revenueDistribution[0].percent}% of completed order value for the selected period.`
+                          {visibleRevenueDistribution[0]
+                            ? `${visibleRevenueDistribution[0].label} currently leads revenue contribution at ${visibleRevenueDistribution[0].percent}% of completed order value for the selected period.`
                             : 'Review completed orders by date to track revenue trends and identify peak service windows.'}
                         </p>
                       </div>
@@ -2245,7 +2568,7 @@ export default function HouseApp() {
                 SHIFT HANDOVER NOTES
             ══════════════════════════════════════════ */}
             {activeTab === 'handover' ? (
-              <div>
+              <div className="admin-page admin-page-handover">
                 <div className="mb-10">
                   <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight">Handover Notes</h2>
                   <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm">Leave notes for the incoming shift to ensure service continuity.</p>
@@ -2338,14 +2661,19 @@ export default function HouseApp() {
                 SETTINGS
             ══════════════════════════════════════════ */}
             {activeTab === 'settings' ? (
-              <div>
+              <div className="admin-page admin-page-settings">
                 <div className="mb-16 flex justify-between items-end gap-6">
                   <div>
                     <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight">General Settings</h2>
                     <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm">Configure core operational parameters for in-room dining.</p>
                   </div>
-                  <button className="bg-[#775a19] text-white px-6 py-3 rounded shadow-[0_4px_14px_rgba(119,90,25,0.2)] hover:bg-[#775a19]/90 transition-colors font-['Manrope'] text-sm font-medium tracking-wide" type="button">
-                    Save Changes
+                  <button
+                    className="bg-[#775a19] text-white px-6 py-3 rounded shadow-[0_4px_14px_rgba(119,90,25,0.2)] hover:bg-[#775a19]/90 transition-colors font-['Manrope'] text-sm font-medium tracking-wide disabled:opacity-50"
+                    disabled={isSavingSettings}
+                    onClick={saveSettingsDraft}
+                    type="button"
+                  >
+                    {isSavingSettings ? 'Saving...' : 'Save Changes'}
                   </button>
                 </div>
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 mb-12">
@@ -2355,16 +2683,37 @@ export default function HouseApp() {
                       <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Operating Hours</h3>
                     </div>
                     <div className="space-y-5">
-                      {['Monday', 'Tuesday', 'Wednesday'].map((day) => (
-                        <div key={day} className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                      {operatingHours.map((row) => (
+                        <div key={row.day} className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                           <div className="flex items-center gap-6 md:w-1/3">
-                            <input type="checkbox" defaultChecked className="h-5 w-5 accent-[#775a19]" />
-                            <span className="font-['Manrope'] text-lg text-[#1a1c1b] w-24">{day}</span>
+                            <input
+                              type="checkbox"
+                              checked={row.enabled}
+                              onChange={(e) => setOperatingHours((current) => current.map((item) => (
+                                item.day === row.day ? { ...item, enabled: e.target.checked } : item
+                              )))}
+                              className="h-5 w-5 accent-[#775a19]"
+                            />
+                            <span className="font-['Manrope'] text-lg text-[#1a1c1b] w-24">{row.day}</span>
                           </div>
                           <div className="flex items-center gap-4">
-                            <input type="time" defaultValue="06:00" className="w-32 rounded-t-[2px] bg-[#e9e8e6] px-4 py-3 text-center text-sm text-[#1a1c1b] outline-none border-b border-[#775a19]" />
+                            <input
+                              type="time"
+                              value={row.opensAt}
+                              onChange={(e) => setOperatingHours((current) => current.map((item) => (
+                                item.day === row.day ? { ...item, opensAt: e.target.value } : item
+                              )))}
+                              className="w-32 rounded-t-[2px] bg-[#e9e8e6] px-4 py-3 text-center text-sm text-[#1a1c1b] outline-none border-b border-[#775a19]"
+                            />
                             <span className="text-sm text-[#5f5e5e]">to</span>
-                            <input type="time" defaultValue="23:30" className="w-32 rounded-t-[2px] bg-[#e9e8e6] px-4 py-3 text-center text-sm text-[#1a1c1b] outline-none border-b border-[#775a19]" />
+                            <input
+                              type="time"
+                              value={row.closesAt}
+                              onChange={(e) => setOperatingHours((current) => current.map((item) => (
+                                item.day === row.day ? { ...item, closesAt: e.target.value } : item
+                              )))}
+                              className="w-32 rounded-t-[2px] bg-[#e9e8e6] px-4 py-3 text-center text-sm text-[#1a1c1b] outline-none border-b border-[#775a19]"
+                            />
                           </div>
                         </div>
                       ))}
@@ -2378,11 +2727,25 @@ export default function HouseApp() {
                     <div className="space-y-8 flex-1">
                       <div>
                         <label className="mb-3 block font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]">Base Tax Rate (%)</label>
-                        <input type="number" defaultValue="8.5" step="0.1" className="w-full bg-[#e3e2e0] border-none border-b border-transparent px-4 py-3 font-mono text-lg text-[#1a1c1b] outline-none focus:border-b focus:border-[#775a19] rounded-t transition-all" />
+                        <input
+                          type="number"
+                          value={taxRate}
+                          onChange={(e) => setTaxRate(e.target.value)}
+                          step="0.1"
+                          placeholder="Set tax rate"
+                          className="w-full bg-[#e3e2e0] border-none border-b border-transparent px-4 py-3 font-mono text-lg text-[#1a1c1b] outline-none focus:border-b focus:border-[#775a19] rounded-t transition-all"
+                        />
                       </div>
                       <div>
                         <label className="mb-3 block font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]">In-Room Dining Surcharge (%)</label>
-                        <input type="number" defaultValue="18.0" step="0.1" className="w-full bg-[#e3e2e0] border-none border-b border-transparent px-4 py-3 font-mono text-lg text-[#1a1c1b] outline-none focus:border-b focus:border-[#775a19] rounded-t transition-all" />
+                        <input
+                          type="number"
+                          value={surchargeRate}
+                          onChange={(e) => setSurchargeRate(e.target.value)}
+                          step="0.1"
+                          placeholder="Set surcharge"
+                          className="w-full bg-[#e3e2e0] border-none border-b border-transparent px-4 py-3 font-mono text-lg text-[#1a1c1b] outline-none focus:border-b focus:border-[#775a19] rounded-t transition-all"
+                        />
                         <p className="mt-2 font-['Manrope'] text-xs text-[#4e4639] opacity-75">Automatically applied to subtotal before tax.</p>
                       </div>
                     </div>
@@ -2401,18 +2764,20 @@ export default function HouseApp() {
                       </p>
                     </div>
                     <div className="md:w-2/3 grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-8">
-                      {[
-                        ['New Order Chime', 'Audible alert on kitchen tablets.', true],
-                        ['VIP Guest Alert', 'SMS notification to duty manager.', true],
-                        ['Delayed Order Warning', 'Alerts after 30 mins prep time.', true],
-                        ['Daily Revenue Digest', 'Email sent at end of service.', false],
-                      ].map(([title, copy, checked]) => (
-                        <div key={title as string} className="flex items-start justify-between">
+                      {alertPreferences.map((preference) => (
+                        <div key={preference.id} className="flex items-start justify-between">
                           <div>
-                            <p className="font-['Manrope'] font-medium text-[#1a1c1b]">{title as string}</p>
-                            <p className="font-['Manrope'] text-xs text-[#4e4639] mt-1">{copy as string}</p>
+                            <p className="font-['Manrope'] font-medium text-[#1a1c1b]">{preference.title}</p>
+                            <p className="font-['Manrope'] text-xs text-[#4e4639] mt-1">{preference.copy}</p>
                           </div>
-                          <input type="checkbox" defaultChecked={Boolean(checked)} className="mt-1 h-5 w-5 accent-[#775a19] shrink-0" />
+                          <input
+                            type="checkbox"
+                            checked={preference.enabled}
+                            onChange={(e) => setAlertPreferences((current) => current.map((item) => (
+                              item.id === preference.id ? { ...item, enabled: e.target.checked } : item
+                            )))}
+                            className="mt-1 h-5 w-5 accent-[#775a19] shrink-0"
+                          />
                         </div>
                       ))}
                     </div>
@@ -2468,7 +2833,7 @@ export default function HouseApp() {
                       </section>
                     </ManagerOnly>
 
-                    <section className={`${ELEVATED_PANEL_CLASS} p-8`}>
+                    <section className={`admin-qr-section ${ELEVATED_PANEL_CLASS} p-8`}>
                       <div className="mb-7 flex items-center gap-3">
                         <span className="material-symbols-outlined text-[#775a19] text-[22px]">qr_code_2</span>
                         <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Guest QR Access</h3>
@@ -2476,10 +2841,10 @@ export default function HouseApp() {
                       <div className="grid gap-6 md:grid-cols-2">
                         <div className="space-y-5">
                           {[
-                            { label: 'Hotel ID', value: hotelId, onChange: setHotelId, placeholder: '' },
-                            { label: 'Stay ID', value: stayId, onChange: setStayId, placeholder: 'stay-1204-demo' },
-                            { label: 'Room Number', value: roomNumber, onChange: setRoomNumber, placeholder: '1204' },
-                            { label: 'Expiry (minutes)', value: expiresInMinutes, onChange: setExpiresInMinutes, placeholder: '720' },
+                            { label: 'Hotel ID', value: hotelId, onChange: setHotelId, placeholder: 'Required hotel ID' },
+                            { label: 'Stay ID', value: stayId, onChange: setStayId, placeholder: 'Guest stay ID' },
+                            { label: 'Room Number', value: roomNumber, onChange: setRoomNumber, placeholder: 'Room number' },
+                            { label: 'Expiry (minutes)', value: expiresInMinutes, onChange: setExpiresInMinutes, placeholder: 'Expiry window' },
                           ].map((field) => (
                             <div key={field.label}>
                               <label className="mb-2 block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">{field.label}</label>
@@ -2562,9 +2927,9 @@ export default function HouseApp() {
 
       {/* ── Menu editor modal ── */}
       {editingProduct ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-2xl bg-white rounded-lg shadow-[0_20px_60px_rgba(26,28,27,0.2)] max-h-[90vh] overflow-y-auto">
-            <div className="p-6 border-b border-[#f4f3f1] flex items-start justify-between gap-4">
+        <div className="admin-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm">
+          <div className="admin-menu-modal w-full max-w-2xl bg-white rounded-lg shadow-[0_20px_60px_rgba(26,28,27,0.2)] max-h-[90vh] overflow-y-auto">
+            <div className="admin-menu-modal-header p-6 border-b border-[#f4f3f1] flex items-start justify-between gap-4">
               <div>
                 <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">Menu Editor</p>
                 <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b] mt-1">
@@ -2578,7 +2943,7 @@ export default function HouseApp() {
                 Close
               </button>
             </div>
-            <div className="p-6 grid gap-5 md:grid-cols-2">
+            <div className="admin-menu-modal-body p-6 grid gap-5 md:grid-cols-2">
               {([
                 { label: 'Item Name', key: 'name' as const },
                 { label: 'Category', key: 'category' as const },
@@ -2616,12 +2981,13 @@ export default function HouseApp() {
                 Ready for guest ordering
               </label>
             </div>
-            <div className="px-6 pb-6 flex flex-wrap gap-3">
+            <div className="admin-menu-modal-footer px-6 pb-6 flex flex-wrap gap-3">
               <button
                 className="bg-[#775a19] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#775a19]/90 transition-colors shadow-[0_4px_14px_rgba(119,90,25,0.2)]"
+                disabled={isSavingProduct}
                 onClick={() => saveProduct(editingProduct)} type="button"
               >
-                Save Menu Item
+                {isSavingProduct ? 'Saving...' : 'Save Item'}
               </button>
               <button
                 className="border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#f4f3f1] transition-colors"
@@ -2634,9 +3000,9 @@ export default function HouseApp() {
         </div>
       ) : null}
       {staffEditor ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-2xl rounded-[22px] bg-white shadow-[0_20px_60px_rgba(26,28,27,0.2)]">
-            <div className="flex items-start justify-between gap-4 border-b border-[#f4f3f1] p-6">
+        <div className="admin-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm">
+          <div className="admin-staff-modal w-full max-w-2xl rounded-[22px] bg-white shadow-[0_20px_60px_rgba(26,28,27,0.2)]">
+            <div className="admin-menu-modal-header flex items-start justify-between gap-4 border-b border-[#f4f3f1] p-6">
               <div>
                 <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">Manager Controls</p>
                 <h3 className="mt-1 font-['Noto_Serif'] text-2xl text-[#1a1c1b]">
@@ -2647,7 +3013,12 @@ export default function HouseApp() {
                 Close
               </button>
             </div>
-            <div className="grid gap-5 p-6 md:grid-cols-2">
+            <div className="admin-menu-modal-body grid gap-5 p-6 md:grid-cols-2">
+              {!hotelId.trim() ? (
+                <div className="md:col-span-2 rounded-[16px] border border-[#ba1a1a]/20 bg-[#ffdad6]/45 px-4 py-3 font-['Manrope'] text-sm text-[#93000a]">
+                  Set Hotel ID in Guest QR Access before creating staff access.
+                </div>
+              ) : null}
               <UnderlineInput id="staff-name" label="Full Name" value={staffEditor.name} onChange={(v) => setStaffEditor((current) => current ? { ...current, name: v } : current)} />
               <UnderlineInput id="staff-username" label="Username" value={staffEditor.username} onChange={(v) => setStaffEditor((current) => current ? { ...current, username: v } : current)} />
               <UnderlineInput id="staff-email" label="Email" value={staffEditor.email} onChange={(v) => setStaffEditor((current) => current ? { ...current, email: v } : current)} />
@@ -2684,10 +3055,10 @@ export default function HouseApp() {
                 Active access
               </label>
             </div>
-            <div className="flex flex-wrap gap-3 px-6 pb-6">
+            <div className="admin-staff-modal-footer flex flex-wrap gap-3 px-6 pb-6">
               <button
                 type="button"
-                disabled={isSavingStaff || !staffEditor.name.trim() || !staffEditor.username.trim() || !staffEditor.email.trim() || (!staffEditor.uid && !staffEditor.password.trim())}
+                disabled={isSavingStaff || !hotelId.trim() || !staffEditor.name.trim() || !staffEditor.username.trim() || !staffEditor.email.trim() || (!staffEditor.uid && !staffEditor.password.trim())}
                 onClick={() => saveStaffAccount(staffEditor)}
                 className="rounded-[14px] bg-[#775a19] px-5 py-3 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] text-white disabled:opacity-50"
               >
