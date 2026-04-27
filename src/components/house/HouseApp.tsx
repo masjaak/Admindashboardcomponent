@@ -330,6 +330,26 @@ function normalizeRole(role: unknown): AdminRole {
   return role === 'staff' ? 'staff' : 'manager';
 }
 
+function getAdminLoginErrorMessage(err: unknown): string {
+  const code = (err as { code?: string })?.code || '';
+  const message = (err as { message?: string })?.message || '';
+
+  if (code.includes('invalid-api-key') || message.toLowerCase().includes('api key')) {
+    return 'Firebase API key admin tidak valid. Refresh build app setelah config diperbaiki.';
+  }
+  if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
+    return 'Email atau password admin tidak cocok.';
+  }
+  if (code === 'auth/too-many-requests') {
+    return 'Login sementara dibatasi karena terlalu banyak percobaan. Tunggu sebentar lalu coba lagi.';
+  }
+  if (code === 'auth/network-request-failed') {
+    return 'Login gagal karena koneksi ke Firebase terputus. Cek internet simulator.';
+  }
+
+  return `Login gagal${code ? ` (${code})` : ''}. Pastikan akun manager atau staff aktif di Firebase Auth.`;
+}
+
 function formatIdr(value: number): string {
   return new Intl.NumberFormat('id-ID', {
     style: 'currency',
@@ -1198,7 +1218,7 @@ export default function HouseApp() {
       await signInWithEmailAndPassword(auth, loginForm.credential.trim(), loginForm.password);
     } catch (err) {
       console.error('Admin login failed', err);
-      setAuthError('Login gagal. Gunakan akun manager atau staff yang aktif di Firebase Auth.');
+      setAuthError(getAdminLoginErrorMessage(err));
     } finally {
       setIsLoggingIn(false);
     }
