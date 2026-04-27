@@ -1865,7 +1865,7 @@ export default function HouseApp() {
                   value={shellSearch}
                   onChange={(e) => setShellSearch(e.target.value)}
                   placeholder={TAB_SEARCH_PLACEHOLDERS[activeTab]}
-                  className="w-full border border-[#d1c5b4]/40 bg-[#e9e8e6] font-['Manrope'] text-sm text-[#1a1c1b] outline-none transition-colors placeholder:text-[#4e4639]/50 focus:bg-white focus:border-[#775a19]/40 focus:shadow-[0_2px_8px_rgba(119,90,25,0.08)]"
+                  className="w-full bg-[#e9e8e6] font-['Manrope'] text-sm text-[#1a1c1b] outline-none transition-colors placeholder:text-[#4e4639]/50 focus:bg-white focus:shadow-[0_2px_8px_rgba(119,90,25,0.08)]"
                 />
                 {shellSearch ? (
                   <button
@@ -2451,7 +2451,7 @@ export default function HouseApp() {
                     <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm tracking-wide">Track financial performance and export reports for accounting.</p>
                   </div>
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-12">
-                    <div className="flex gap-2 bg-[#f4f3f1] p-1 rounded-full border border-[#e3e2e0]/50">
+                    <div className="revenue-range-toggle flex gap-2 bg-[#f4f3f1] p-1 rounded-full border border-[#e3e2e0]/50">
                       {(['daily', 'weekly', 'monthly'] as const).map((range) => (
                         <button
                           key={range}
@@ -2531,32 +2531,46 @@ export default function HouseApp() {
                           <span key={step}>{formatCompactCurrency(Math.max(...revenueTrend.map((point) => point.value), 0) * step)}</span>
                         ))}
                       </div>
-                      <div className="flex h-[280px] items-end justify-between border-b border-[#ebe2d6]/60 px-4 pb-8 pl-10">
+                      <div
+                        className="pl-10"
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: `repeat(${revenueTrend.length}, minmax(0, 1fr))`,
+                          gap: '0.5rem',
+                          alignItems: 'end',
+                        }}
+                      >
                         {(() => {
-                          const maxValue = Math.max(...revenueTrend.map((point) => point.value), 1);
-                          return revenueTrend.map((point) => {
-                            const todayLabel = new Date().toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
+                          const maxVal = Math.max(...revenueTrend.map((p) => p.value), 1);
+                          const todayLabel = new Date().toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
                           const currentWeekIndex = Math.min(3, Math.floor((new Date().getDate() - 1) / 7));
-                          const isActive = revenueRange === 'monthly'
-                            ? point.label === `Week ${currentWeekIndex + 1}`
-                            : point.label === todayLabel;
-                            const height = `${Math.max(20, Math.round((point.value / maxValue) * 90))}%`;
+                          return revenueTrend.map((point) => {
+                            const isActive = revenueRange === 'monthly'
+                              ? point.label === `Week ${currentWeekIndex + 1}`
+                              : point.label === todayLabel;
+                            const barHeightPct = (point.value / maxVal) * 100;
                             return (
-                              <div key={point.label} className={`group relative flex-1 max-w-20 min-w-6 rounded-t-sm transition-colors ${isActive ? 'bg-[#8b6418]/80 shadow-[0_0_15px_rgba(197,160,89,0.3)]' : 'bg-[#e3e2e0] hover:bg-[#c5a059]/30'}`} style={{ height }}>
-                                <div className="absolute -top-8 left-1/2 -translate-x-1/2 rounded bg-[#2f3130] px-2 py-1 text-xs whitespace-nowrap text-[#f1f1ef] opacity-0 transition-opacity group-hover:opacity-100">
-                                  {formatIdr(point.value)}
+                              <div key={point.label} className="flex flex-col items-center">
+                                <div
+                                  className="relative w-full"
+                                  style={{ height: 'clamp(12rem, 22vw, 17rem)', borderBottom: '1px solid rgba(235,226,214,0.6)' }}
+                                >
+                                  <div
+                                    className={`group absolute bottom-0 left-1/2 -translate-x-1/2 w-3/4 max-w-[3rem] rounded-t-sm transition-colors cursor-pointer ${isActive ? 'bg-[#8b6418]/80 shadow-[0_0_15px_rgba(197,160,89,0.3)]' : 'bg-[#e3e2e0] hover:bg-[#c5a059]/30'}`}
+                                    style={{ height: `${Math.max(4, barHeightPct)}%` }}
+                                  >
+                                    <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-[#2f3130] text-white text-[10px] px-2 py-1 rounded-md whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                                      {formatIdr(point.value)}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="mt-2 text-center">
+                                  <p className={`font-['Manrope'] text-xs uppercase tracking-[0.16em] ${isActive ? 'font-bold text-[#775a19]' : 'text-[#7c7366]'}`}>{point.label}</p>
                                 </div>
                               </div>
                             );
                           });
                         })()}
-                      </div>
-                      <div className="mt-4 grid gap-3 pl-10" style={{ gridTemplateColumns: `repeat(${revenueTrend.length}, minmax(0, 1fr))` }}>
-                        {revenueTrend.map((point) => (
-                          <div key={point.label} className="text-center">
-                            <p className={`font-['Manrope'] text-xs uppercase tracking-[0.16em] ${(() => { const todayLbl = new Date().toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase(); const weekIdx = Math.min(3, Math.floor((new Date().getDate() - 1) / 7)); return (revenueRange === 'monthly' ? point.label === `Week ${weekIdx + 1}` : point.label === todayLbl) ? 'font-bold text-[#775a19]' : 'text-[#7c7366]'; })()}`}>{point.label}</p>
-                          </div>
-                        ))}
                       </div>
                     </div>
                   </div>
@@ -2733,10 +2747,8 @@ export default function HouseApp() {
                     <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight">General Settings</h2>
                     <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm">Configure core operational parameters for in-room dining.</p>
                   </div>
-                </div>
-                <div className="sticky bottom-6 z-30 flex justify-end pointer-events-none mb-0" style={{ marginBottom: '-3.5rem' }}>
                   <button
-                    className="pointer-events-auto bg-[#775a19] text-white px-8 py-3.5 rounded-full shadow-[0_8px_24px_rgba(119,90,25,0.3)] hover:bg-[#775a19]/90 transition-colors font-['Manrope'] text-sm font-semibold tracking-wide disabled:opacity-50 flex items-center gap-2"
+                    className="ml-auto shrink-0 bg-[#775a19] text-white px-8 py-3.5 rounded-full shadow-[0_8px_24px_rgba(119,90,25,0.3)] hover:bg-[#775a19]/90 transition-colors font-['Manrope'] text-sm font-semibold tracking-wide disabled:opacity-50 flex items-center gap-2"
                     disabled={isSavingSettings}
                     onClick={saveSettingsDraft}
                     type="button"
@@ -2753,37 +2765,33 @@ export default function HouseApp() {
                     </div>
                     <div className="space-y-5">
                       {operatingHours.map((row) => (
-                        <div key={row.day} className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                          <div className="flex items-center gap-6 md:w-1/3">
-                            <input
-                              type="checkbox"
-                              checked={row.enabled}
-                              onChange={(e) => setOperatingHours((current) => current.map((item) => (
-                                item.day === row.day ? { ...item, enabled: e.target.checked } : item
-                              )))}
-                              className="h-5 w-5 accent-[#775a19]"
-                            />
-                            <span className="font-['Manrope'] text-lg text-[#1a1c1b] w-24">{row.day}</span>
-                          </div>
-                          <div className="flex items-center gap-4">
-                            <input
-                              type="time"
-                              value={row.opensAt}
-                              onChange={(e) => setOperatingHours((current) => current.map((item) => (
-                                item.day === row.day ? { ...item, opensAt: e.target.value } : item
-                              )))}
-                              className="w-32 rounded-t-[2px] bg-[#e9e8e6] px-4 py-3 text-center text-sm text-[#1a1c1b] outline-none border-b border-[#775a19]"
-                            />
-                            <span className="text-sm text-[#5f5e5e]">to</span>
-                            <input
-                              type="time"
-                              value={row.closesAt}
-                              onChange={(e) => setOperatingHours((current) => current.map((item) => (
-                                item.day === row.day ? { ...item, closesAt: e.target.value } : item
-                              )))}
-                              className="w-32 rounded-t-[2px] bg-[#e9e8e6] px-4 py-3 text-center text-sm text-[#1a1c1b] outline-none border-b border-[#775a19]"
-                            />
-                          </div>
+                        <div key={row.day} style={{ display: 'grid', gridTemplateColumns: '1.5rem 8rem 1fr auto 1fr', alignItems: 'center', gap: '0.75rem' }}>
+                          <input
+                            type="checkbox"
+                            checked={row.enabled}
+                            onChange={(e) => setOperatingHours((current) => current.map((item) => (
+                              item.day === row.day ? { ...item, enabled: e.target.checked } : item
+                            )))}
+                            className="h-5 w-5 accent-[#775a19]"
+                          />
+                          <span className="font-['Manrope'] text-sm text-[#1a1c1b]">{row.day}</span>
+                          <input
+                            type="time"
+                            value={row.opensAt}
+                            onChange={(e) => setOperatingHours((current) => current.map((item) => (
+                              item.day === row.day ? { ...item, opensAt: e.target.value } : item
+                            )))}
+                            className="w-full bg-[#e9e8e6] px-3 py-2.5 text-center text-sm text-[#1a1c1b] outline-none border-b border-[#775a19]"
+                          />
+                          <span className="text-sm text-[#5f5e5e] text-center">–</span>
+                          <input
+                            type="time"
+                            value={row.closesAt}
+                            onChange={(e) => setOperatingHours((current) => current.map((item) => (
+                              item.day === row.day ? { ...item, closesAt: e.target.value } : item
+                            )))}
+                            className="w-full bg-[#e9e8e6] px-3 py-2.5 text-center text-sm text-[#1a1c1b] outline-none border-b border-[#775a19]"
+                          />
                         </div>
                       ))}
                     </div>
@@ -2903,12 +2911,12 @@ export default function HouseApp() {
                     </ManagerOnly>
 
                     <section className={`admin-qr-section ${ELEVATED_PANEL_CLASS} p-8`}>
-                      <div className="mb-7 flex items-center gap-3">
+                      <div className="mb-6 flex items-center gap-3">
                         <span className="material-symbols-outlined text-[#775a19] text-[22px]">qr_code_2</span>
                         <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Guest QR Access</h3>
                       </div>
-                      <div className="grid gap-6 md:grid-cols-2">
-                        <div className="space-y-5">
+                      <div className="grid gap-8 md:grid-cols-2">
+                        <div className="space-y-6">
                           {[
                             { label: 'Hotel ID', value: hotelId, onChange: setHotelId, placeholder: 'Required hotel ID' },
                             { label: 'Stay ID', value: stayId, onChange: setStayId, placeholder: 'Guest stay ID' },
@@ -2920,7 +2928,8 @@ export default function HouseApp() {
                               <input type="text" value={field.value} placeholder={field.placeholder} onChange={(e) => field.onChange(e.target.value)} className="w-full rounded-[14px] bg-[#e9e8e6] px-4 py-3 font-['Manrope'] text-sm text-[#1a1c1b] outline-none" />
                             </div>
                           ))}
-                          <div className="flex flex-wrap gap-3 pt-2">
+                          <div className="border-t border-[#ebe2d6] my-2" />
+                          <div className="flex flex-wrap items-center gap-3">
                             <button className="rounded-[14px] bg-[#1a1c1b] px-5 py-3 font-['Manrope'] text-xs uppercase tracking-widest text-white disabled:opacity-50" disabled={isGeneratingToken} onClick={handleGenerateQr} type="button">
                               {isGeneratingToken ? 'Generating…' : 'Generate QR'}
                             </button>
@@ -2929,11 +2938,15 @@ export default function HouseApp() {
                                 Copy URL
                               </button>
                             ) : null}
+                            {tokenStatus ? (
+                              <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold ${tokenStatus.toLowerCase().includes('active') || tokenStatus.toLowerCase().includes('success') || tokenStatus.toLowerCase().includes('generat') ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>
+                                {tokenStatus}
+                              </span>
+                            ) : null}
                           </div>
-                          {tokenStatus ? <p className="font-['Manrope'] text-xs text-[#4e4639]">{tokenStatus}</p> : null}
                         </div>
-                        <div className={`${TONAL_PANEL_CLASS} p-5`}>
-                          <p className="mb-4 font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">Print Pack</p>
+                        <div className="bg-[#f4f3f1] rounded-[18px] p-6 border border-[#e3e2e0]">
+                          <h4 className="mb-4 font-['Noto_Serif'] text-base text-[#1a1c1b]">Print Pack</h4>
                           {tokenResult ? (
                             <div className="space-y-4 font-['Manrope'] text-sm">
                               {[
