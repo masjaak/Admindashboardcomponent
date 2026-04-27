@@ -494,6 +494,19 @@ function downloadExcelFile(filename: string, mimeType: string, content: string):
   URL.revokeObjectURL(url);
 }
 
+function LoadingSkeleton({ lines = 3 }: { lines?: number }) {
+  return (
+    <div className={`${ELEVATED_PANEL_CLASS} p-8 space-y-4 animate-pulse`}>
+      {Array.from({ length: lines }, (_, i) => (
+        <div key={i} className="flex gap-4 items-center">
+          <div className="h-4 bg-[#e9e8e6] rounded w-1/4" />
+          <div className="h-4 bg-[#e9e8e6] rounded" style={{ width: `${50 + Math.random() * 30}%` }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ManagerOnly({ children, role }: { children: React.ReactNode; role: AdminRole }) {
   if (role === 'manager') return <>{children}</>;
 
@@ -548,6 +561,8 @@ export default function HouseApp() {
   const [shiftNotes, setShiftNotes] = useState<ShiftNote[]>([]);
   const [staffAccounts, setStaffAccounts] = useState<StaffAccount[]>([]);
 
+  const [dataLoaded, setDataLoaded] = useState(false);
+
   // UI state
   const [shellSearch, setShellSearch] = useState('');
   const [editingProduct, setEditingProduct] = useState<MenuEditorState | null>(null);
@@ -578,6 +593,7 @@ export default function HouseApp() {
   const [staffEditor, setStaffEditor] = useState<StaffEditorState | null>(null);
   const [isSavingStaff, setIsSavingStaff] = useState(false);
   const [passwordResetUid, setPasswordResetUid] = useState<string | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
 
   // Shift handover
   const [activeShift, setActiveShift] = useState<ShiftName>('morning');
@@ -855,6 +871,26 @@ export default function HouseApp() {
   useDynamicTitle(unreadIncomingOrders.length);
   useWakeLock();
 
+  // Auto-dismiss notifications after 6 seconds
+  useEffect(() => {
+    if (!notificationMessage) return;
+    const timer = window.setTimeout(() => setNotificationMessage(''), 6000);
+    return () => window.clearTimeout(timer);
+  }, [notificationMessage]);
+
+  // Escape key closes modals
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        if (staffEditor) { setStaffEditor(null); return; }
+        if (editingProduct) { setEditingProduct(null); return; }
+        if (confirmDialog) { setConfirmDialog(null); return; }
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [staffEditor, editingProduct, confirmDialog]);
+
   /* ── Auth ── */
   useEffect(() => {
     const readyFallback = window.setTimeout(() => {
@@ -883,7 +919,7 @@ export default function HouseApp() {
 
   /* ── Firestore subscriptions ── */
   useEffect(() => {
-    if (!identity) { setOrders([]); setProducts([]); setShiftNotes([]); setStaffAccounts([]); return; }
+    if (!identity) { setOrders([]); setProducts([]); setShiftNotes([]); setStaffAccounts([]); setDataLoaded(false); return; }
 
     const unsubOrders = onSnapshot(
       query(collection(db, 'orders'), orderBy('createdAt', 'desc')),
@@ -897,6 +933,7 @@ export default function HouseApp() {
         }
         previousOrdersRef.current = next;
         setOrders(next);
+        setDataLoaded(true);
       },
     );
 
@@ -1231,9 +1268,17 @@ export default function HouseApp() {
     }
   }
 
-  async function deleteProduct(productId: string) {
+  function deleteProduct(productId: string) {
     const product = products.find((p) => p.id === productId);
-    if (!window.confirm(`Remove ${product?.name || 'this menu item'} from Menu Manager?`)) return;
+    setConfirmDialog({
+      title: 'Remove Menu Item',
+      message: `Remove ${product?.name || 'this menu item'} from Menu Manager? This action cannot be undone.`,
+      onConfirm: () => executeDeleteProduct(productId),
+    });
+  }
+
+  async function executeDeleteProduct(productId: string) {
+    const product = products.find((p) => p.id === productId);
     setBusyActionId(`delete-product-${productId}`);
     try {
       await deleteDoc(doc(db, 'products', productId));
@@ -1280,7 +1325,15 @@ export default function HouseApp() {
     }
   }
 
-  async function handleRevokeGuest(guestUid: string) {
+  function handleRevokeGuest(guestUid: string) {
+    setConfirmDialog({
+      title: 'Revoke Guest Session',
+      message: 'Revoke this guest session? The guest will need to request a new QR access link.',
+      onConfirm: () => executeRevokeGuest(guestUid),
+    });
+  }
+
+  async function executeRevokeGuest(guestUid: string) {
     setRevokingSessionId(guestUid);
     try {
       await revokeGuestSessionAsAdmin(guestUid);
@@ -1318,6 +1371,7 @@ export default function HouseApp() {
       });
       await logAudit('add_shift_note', 'shiftNote', ref.id, { shift: activeShift });
       setHandoverDraft('');
+      showDashboardNotice(`Handover note posted to ${activeShift} shift.`);
     } finally {
       setIsSavingNote(false);
     }
@@ -1367,9 +1421,16 @@ export default function HouseApp() {
     }
   }
 
-  async function removeStaffAccount(uid: string) {
+  function removeStaffAccount(uid: string) {
     const staff = staffAccounts.find((account) => account.uid === uid);
-    if (!window.confirm(`Remove ${staff?.name || 'this staff account'} from admin access?`)) return;
+    setConfirmDialog({
+      title: 'Remove Staff Account',
+      message: `Remove ${staff?.name || 'this staff account'} from admin access? This action cannot be undone.`,
+      onConfirm: () => executeRemoveStaffAccount(uid),
+    });
+  }
+
+  async function executeRemoveStaffAccount(uid: string) {
     setTeamStatus('');
     try {
       await deleteAdminUser(uid);
@@ -1751,7 +1812,7 @@ export default function HouseApp() {
                     <button
                       className={`relative flex w-full items-center justify-between py-4 pl-8 pr-5 text-left transition-all duration-200 font-['Manrope'] text-sm font-medium tracking-wide ${
                         isActive
-                          ? 'bg-white text-amber-900 rounded-l-full font-bold'
+                          ? 'bg-white text-amber-900 font-bold'
                           : 'text-stone-600 hover:bg-white/50'
                       }`}
                       onClick={() => openAdminTab(id)}
@@ -1797,14 +1858,14 @@ export default function HouseApp() {
           {/* Top bar */}
           <header className="admin-topbar fixed top-0 right-0 z-40 bg-stone-50/80 backdrop-blur-md shadow-[0_20px_40px_rgba(26,28,27,0.06)] w-full md:w-[calc(100%-16rem)] px-8 py-6 flex justify-between items-center">
             <div className="flex-1 min-w-0">
-              <div className="admin-shell-search relative hidden md:block">
+              <div className="admin-shell-search relative">
                 <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-[#4e4639] text-[18px]">search</span>
                 <input
                   type="search"
                   value={shellSearch}
                   onChange={(e) => setShellSearch(e.target.value)}
                   placeholder={TAB_SEARCH_PLACEHOLDERS[activeTab]}
-                  className="w-full border-none bg-[#e9e8e6] font-['Manrope'] text-sm text-[#1a1c1b] outline-none transition-colors placeholder:text-[#4e4639]/50"
+                  className="w-full border border-[#d1c5b4]/40 bg-[#e9e8e6] font-['Manrope'] text-sm text-[#1a1c1b] outline-none transition-colors placeholder:text-[#4e4639]/50 focus:bg-white focus:border-[#775a19]/40 focus:shadow-[0_2px_8px_rgba(119,90,25,0.08)]"
                 />
                 {shellSearch ? (
                   <button
@@ -1830,7 +1891,7 @@ export default function HouseApp() {
 
           <div className="admin-canvas pt-32 px-8 md:px-12 pb-24 max-w-7xl mx-auto">
 
-            <div className="admin-mobile-nav mb-8 md:hidden overflow-x-auto">
+            <div className="admin-mobile-nav mb-8 md:hidden overflow-x-auto" style={{ maskImage: 'linear-gradient(to right, transparent 0%, black 4%, black 92%, transparent 100%)', WebkitMaskImage: 'linear-gradient(to right, transparent 0%, black 4%, black 92%, transparent 100%)' }}>
               <div className="inline-flex min-w-max gap-2 rounded-full bg-white/78 p-1.5 shadow-[0_16px_34px_rgba(26,28,27,0.06)] ring-1 ring-[#efe8de]">
                 {navItems.map(({ id, label, icon, badge }) => {
                   const isActive = activeTab === id;
@@ -1914,7 +1975,9 @@ export default function HouseApp() {
                   </div>
                 </div>
 
-                {visibleOrders.length === 0 ? (
+                {!dataLoaded ? (
+                  <LoadingSkeleton lines={4} />
+                ) : visibleOrders.length === 0 ? (
                   <div className={`${ELEVATED_PANEL_CLASS} p-12 text-center`}>
                     <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">restaurant</span>
                     <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No active orders match the current queue.</p>
@@ -1974,6 +2037,7 @@ export default function HouseApp() {
                                   <>
                                     <span className="font-['Manrope'] text-xs text-[#4e4639]">Total</span>
                                     <span className="font-['Noto_Serif'] text-base font-semibold text-[#775a19]">{formatIdr(order.total)}</span>
+                                    <span className="font-['Manrope'] text-[10px] uppercase tracking-widest text-[#5f5e5e] bg-[#f4f3f1] px-2 py-0.5 rounded">{order.paymentMethod}</span>
                                     {order.rating ? <span className="font-['Manrope'] text-xs text-[#5f5e5e]">· {order.rating}/5 ★</span> : null}
                                   </>
                                 )}
@@ -2000,13 +2064,13 @@ export default function HouseApp() {
                                     {busyActionId === `status-${order.id}` ? 'Updating...' : primaryAction.label}
                                   </button>
                                 ) : null}
-                                {!primaryAction ? (
+                                {!primaryAction && !order.isRead ? (
                                   <button
                                     className="font-['Manrope'] text-sm font-medium bg-[#efeeec] text-[#1a1c1b] px-4 py-2 rounded transition-colors hover:bg-[#e9e8e6]"
                                     disabled={busyActionId === `read-${order.id}`}
                                     onClick={() => markAsRead(order.id)} type="button"
                                   >
-                                    {busyActionId === `read-${order.id}` ? 'Updating...' : 'Update Status'}
+                                    {busyActionId === `read-${order.id}` ? 'Updating...' : 'Mark as Read'}
                                   </button>
                                 ) : null}
                                 {sla && (order.accessTokenId || order.guestUid) ? (
@@ -2125,7 +2189,9 @@ export default function HouseApp() {
                       </div>
                     </article>
                   ))}
-                  {visibleProducts.length === 0 ? (
+                  {!dataLoaded ? (
+                    <div className="col-span-full"><LoadingSkeleton lines={4} /></div>
+                  ) : visibleProducts.length === 0 ? (
                     <div className={`col-span-full ${ELEVATED_PANEL_CLASS} p-12 text-center`}>
                       <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">menu_book</span>
                       <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No items match your search.</p>
@@ -2161,18 +2227,8 @@ export default function HouseApp() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 mb-12 items-center">
-                  <div className="lg:col-span-4 relative">
-                    <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-[#4e4639]">search</span>
-                    <input
-                      type="text"
-                      value={shellSearch}
-                      onChange={(e) => setShellSearch(e.target.value)}
-                      placeholder="Search suite, keyword, or guest..."
-                      className="w-full rounded-[14px] bg-[#e9e8e6] py-4 pl-12 pr-4 font-['Manrope'] text-sm text-[#1a1c1b] outline-none transition focus:bg-white focus:shadow-[0_4px_20px_rgba(26,28,27,0.04)]"
-                    />
-                  </div>
-                  <div className="lg:col-span-8 flex flex-wrap gap-3 justify-start lg:justify-end">
+                <div className="flex flex-wrap gap-3 mb-12 items-center justify-start">
+                  <div className="flex flex-wrap gap-3">
                     {[
                       { id: 'all' as const, label: 'All Ratings' },
                       { id: '5' as const, label: '5 Stars' },
@@ -2198,16 +2254,18 @@ export default function HouseApp() {
                   </div>
                 </div>
 
-                {filteredFeedbackOrders.length === 0 ? (
+                {!dataLoaded ? (
+                  <LoadingSkeleton lines={4} />
+                ) : filteredFeedbackOrders.length === 0 ? (
                   <div className={`${ELEVATED_PANEL_CLASS} p-12 text-center`}>
                     <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">reviews</span>
                     <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No guest feedback yet.</p>
                   </div>
                 ) : (
                   <div className="space-y-8">
-                    <div className="grid grid-cols-1 xl:grid-cols-[1.45fr_0.7fr] gap-8">
+                    <div className={`grid grid-cols-1 ${feedbackSideOrder ? 'xl:grid-cols-[1.45fr_0.7fr]' : ''} gap-8`}>
                       {feedbackHeroOrder ? (
-                        <article className="bg-white p-8 rounded relative group shadow-[0_10px_30px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/20 lg:col-span-2">
+                        <article className={`bg-white p-8 rounded relative group shadow-[0_10px_30px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/20 ${feedbackSideOrder ? 'lg:col-span-2' : ''}`}>
                           <div className="flex items-start justify-between gap-5">
                             <div>
                               <div className="mb-5 flex items-center gap-1">
@@ -2287,7 +2345,7 @@ export default function HouseApp() {
                       ) : null}
                     </div>
 
-                    <div className="grid grid-cols-1 xl:grid-cols-[0.7fr_1.3fr] gap-8">
+                    {(feedbackIssueOrder || feedbackStoryOrder) ? <div className={`grid grid-cols-1 ${feedbackIssueOrder && feedbackStoryOrder ? 'xl:grid-cols-[0.7fr_1.3fr]' : ''} gap-8`}>
                       {feedbackIssueOrder ? (
                         <article className="bg-white p-8 rounded relative group shadow-[0_10px_30px_rgba(26,28,27,0.03)] border-l-4 border-[#ba1a1a]/50 flex flex-col">
                           <div>
@@ -2376,7 +2434,7 @@ export default function HouseApp() {
                           </div>
                         </article>
                       ) : null}
-                    </div>
+                    </div> : null}
                   </div>
                 )}
               </div>
@@ -2388,6 +2446,10 @@ export default function HouseApp() {
             {activeTab === 'revenue' ? (
               <ManagerOnly role={identity.role}>
                 <div className="admin-page admin-page-revenue">
+                  <div className="mb-10">
+                    <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight font-semibold">Revenue</h2>
+                    <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm tracking-wide">Track financial performance and export reports for accounting.</p>
+                  </div>
                   <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-12">
                     <div className="flex gap-2 bg-[#f4f3f1] p-1 rounded-full border border-[#e3e2e0]/50">
                       {(['daily', 'weekly', 'monthly'] as const).map((range) => (
@@ -2448,7 +2510,7 @@ export default function HouseApp() {
                         <span className={`material-symbols-outlined text-sm mr-1 ${revenueOverview.ordersDelta >= 0 ? 'text-[#775a19]' : 'text-[#ba1a1a]'}`}>
                           {revenueOverview.ordersDelta >= 0 ? 'trending_up' : 'trending_down'}
                         </span>
-                        <span className={`font-['Manrope'] font-medium text-xs ${revenueOverview.ordersDelta >= 0 ? 'text-[#5f5e5e]' : 'text-[#ba1a1a]'}`}>
+                        <span className={`font-['Manrope'] font-medium text-xs ${revenueOverview.ordersDelta >= 0 ? 'text-[#775a19]' : 'text-[#ba1a1a]'}`}>
                           {`${revenueOverview.ordersDelta >= 0 ? '+' : ''}${revenueOverview.ordersDelta.toFixed(1)}%`}
                         </span>
                         <span className="font-['Manrope'] text-xs text-[#5f5e5e]">vs last period</span>
@@ -2473,10 +2535,14 @@ export default function HouseApp() {
                         {(() => {
                           const maxValue = Math.max(...revenueTrend.map((point) => point.value), 1);
                           return revenueTrend.map((point) => {
-                            const isActive = point.label === 'THU' || point.label === 'Week 4';
+                            const todayLabel = new Date().toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
+                          const currentWeekIndex = Math.min(3, Math.floor((new Date().getDate() - 1) / 7));
+                          const isActive = revenueRange === 'monthly'
+                            ? point.label === `Week ${currentWeekIndex + 1}`
+                            : point.label === todayLabel;
                             const height = `${Math.max(20, Math.round((point.value / maxValue) * 90))}%`;
                             return (
-                              <div key={point.label} className={`group relative w-10 rounded-t-sm transition-colors ${isActive ? 'bg-[#8b6418]/80 shadow-[0_0_15px_rgba(197,160,89,0.3)]' : 'bg-[#e3e2e0] hover:bg-[#c5a059]/30'}`} style={{ height }}>
+                              <div key={point.label} className={`group relative flex-1 max-w-20 min-w-6 rounded-t-sm transition-colors ${isActive ? 'bg-[#8b6418]/80 shadow-[0_0_15px_rgba(197,160,89,0.3)]' : 'bg-[#e3e2e0] hover:bg-[#c5a059]/30'}`} style={{ height }}>
                                 <div className="absolute -top-8 left-1/2 -translate-x-1/2 rounded bg-[#2f3130] px-2 py-1 text-xs whitespace-nowrap text-[#f1f1ef] opacity-0 transition-opacity group-hover:opacity-100">
                                   {formatIdr(point.value)}
                                 </div>
@@ -2488,7 +2554,7 @@ export default function HouseApp() {
                       <div className="mt-4 grid gap-3 pl-10" style={{ gridTemplateColumns: `repeat(${revenueTrend.length}, minmax(0, 1fr))` }}>
                         {revenueTrend.map((point) => (
                           <div key={point.label} className="text-center">
-                            <p className={`font-['Manrope'] text-xs uppercase tracking-[0.16em] ${point.label === 'THU' || point.label === 'Week 4' ? 'font-bold text-[#775a19]' : 'text-[#7c7366]'}`}>{point.label}</p>
+                            <p className={`font-['Manrope'] text-xs uppercase tracking-[0.16em] ${(() => { const todayLbl = new Date().toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase(); const weekIdx = Math.min(3, Math.floor((new Date().getDate() - 1) / 7)); return (revenueRange === 'monthly' ? point.label === `Week ${weekIdx + 1}` : point.label === todayLbl) ? 'font-bold text-[#775a19]' : 'text-[#7c7366]'; })()}`}>{point.label}</p>
                           </div>
                         ))}
                       </div>
@@ -2667,12 +2733,15 @@ export default function HouseApp() {
                     <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight">General Settings</h2>
                     <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm">Configure core operational parameters for in-room dining.</p>
                   </div>
+                </div>
+                <div className="sticky bottom-6 z-30 flex justify-end pointer-events-none mb-0" style={{ marginBottom: '-3.5rem' }}>
                   <button
-                    className="bg-[#775a19] text-white px-6 py-3 rounded shadow-[0_4px_14px_rgba(119,90,25,0.2)] hover:bg-[#775a19]/90 transition-colors font-['Manrope'] text-sm font-medium tracking-wide disabled:opacity-50"
+                    className="pointer-events-auto bg-[#775a19] text-white px-8 py-3.5 rounded-full shadow-[0_8px_24px_rgba(119,90,25,0.3)] hover:bg-[#775a19]/90 transition-colors font-['Manrope'] text-sm font-semibold tracking-wide disabled:opacity-50 flex items-center gap-2"
                     disabled={isSavingSettings}
                     onClick={saveSettingsDraft}
                     type="button"
                   >
+                    <span className="material-symbols-outlined text-[18px]">save</span>
                     {isSavingSettings ? 'Saving...' : 'Save Changes'}
                   </button>
                 </div>
@@ -2927,8 +2996,8 @@ export default function HouseApp() {
 
       {/* ── Menu editor modal ── */}
       {editingProduct ? (
-        <div className="admin-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm">
-          <div className="admin-menu-modal w-full max-w-2xl bg-white rounded-lg shadow-[0_20px_60px_rgba(26,28,27,0.2)] max-h-[90vh] overflow-y-auto">
+        <div className="admin-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm" onClick={() => setEditingProduct(null)}>
+          <div className="admin-menu-modal w-full max-w-2xl bg-white rounded-lg shadow-[0_20px_60px_rgba(26,28,27,0.2)] max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="admin-menu-modal-header p-6 border-b border-[#f4f3f1] flex items-start justify-between gap-4">
               <div>
                 <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">Menu Editor</p>
@@ -2956,6 +3025,14 @@ export default function HouseApp() {
                   onChange={(v) => setEditingProduct((c) => c ? { ...c, [field.key]: v } : c)}
                 />
               ))}
+              {editingProduct.image?.trim() ? (
+                <div className="md:col-span-2">
+                  <label className="block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">Image Preview</label>
+                  <div className="h-32 w-32 rounded-lg overflow-hidden bg-[#e9e8e6] border border-[#d1c5b4]/30">
+                    <img src={editingProduct.image} alt="Preview" className="h-full w-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                  </div>
+                </div>
+              ) : null}
               <div className="md:col-span-2">
                 <label className="block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">Description</label>
                 <textarea
@@ -3000,8 +3077,8 @@ export default function HouseApp() {
         </div>
       ) : null}
       {staffEditor ? (
-        <div className="admin-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm">
-          <div className="admin-staff-modal w-full max-w-2xl rounded-[22px] bg-white shadow-[0_20px_60px_rgba(26,28,27,0.2)]">
+        <div className="admin-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm" onClick={() => setStaffEditor(null)}>
+          <div className="admin-staff-modal w-full max-w-2xl rounded-[22px] bg-white shadow-[0_20px_60px_rgba(26,28,27,0.2)]" onClick={(e) => e.stopPropagation()}>
             <div className="admin-menu-modal-header flex items-start justify-between gap-4 border-b border-[#f4f3f1] p-6">
               <div>
                 <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">Manager Controls</p>
@@ -3076,6 +3153,33 @@ export default function HouseApp() {
               ) : null}
               <button type="button" onClick={() => setStaffEditor(null)} className="rounded-[14px] border border-[#d1c5b4]/50 px-5 py-3 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] text-[#4e4639]">
                 Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {confirmDialog ? (
+        <div className="admin-modal-backdrop fixed inset-0 z-[60] flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm" onClick={() => setConfirmDialog(null)}>
+          <div className="w-full max-w-sm rounded-2xl bg-white shadow-[0_20px_60px_rgba(26,28,27,0.24)] p-7" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-4">
+              <span className="material-symbols-outlined text-[#ba1a1a] text-[22px]">warning</span>
+              <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">{confirmDialog.title}</h3>
+            </div>
+            <p className="font-['Manrope'] text-sm text-[#4e4639] leading-relaxed mb-7">{confirmDialog.message}</p>
+            <div className="flex gap-3 justify-end">
+              <button
+                type="button"
+                className="rounded-[14px] border border-[#d1c5b4]/50 px-5 py-2.5 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] text-[#4e4639] hover:bg-[#f4f3f1] transition-colors"
+                onClick={() => setConfirmDialog(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="rounded-[14px] bg-[#ba1a1a] px-5 py-2.5 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] text-white hover:bg-[#93000a] transition-colors shadow-[0_8px_16px_rgba(186,26,26,0.2)]"
+                onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}
+              >
+                Confirm
               </button>
             </div>
           </div>

@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { motion } from "motion/react";
-import { ArrowLeft, Trash2, CreditCard, Banknote, QrCode } from "lucide-react";
+import { ArrowLeft, Trash2, CreditCard, Banknote, QrCode, CheckCircle } from "lucide-react";
 import { Language, CartItem } from "../types";
 
 interface CheckoutViewProps {
@@ -50,7 +50,7 @@ export const CheckoutView: React.FC<CheckoutViewProps> = ({
         </h1>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6 pb-32">
+      <div className="flex-1 overflow-y-auto p-6 pb-6">
         {/* Order Items */}
         <div className="space-y-4 mb-8">
           {cart.map((item, idx) => (
@@ -170,7 +170,7 @@ export const CheckoutView: React.FC<CheckoutViewProps> = ({
       </div>
 
       {/* Footer Action */}
-      <div className="fixed bottom-0 left-0 right-0 p-6 bg-white border-t border-slate-100 z-20">
+      <div className="sticky bottom-0 left-0 right-0 p-6 bg-white border-t border-slate-100 z-20">
         <button 
           onClick={() => onPlaceOrder(paymentMethod, proof)}
           disabled={loading || (paymentMethod !== 'room' && !proof)}
@@ -191,8 +191,3 @@ export const CheckoutView: React.FC<CheckoutViewProps> = ({
     </motion.div>
   );
 };
-
-// Helper Icon
-const CheckCircle = ({ size }: { size: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-);
