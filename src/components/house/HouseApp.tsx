@@ -13,7 +13,7 @@ import {
   setDoc,
   updateDoc,
 } from 'firebase/firestore';
-import { User, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { User, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { auth, db, firebaseConfig } from '../../lib/firebase';
 import { createGuestQrToken, revokeGuestSessionAsAdmin } from '../../lib/adminAccess';
 import {
@@ -1209,6 +1209,24 @@ export default function HouseApp() {
     setIdentity(null);
   }
 
+  async function handlePasswordReset() {
+    const email = loginForm.credential.trim();
+    setAuthError('');
+
+    if (!email || !email.includes('@')) {
+      setAuthError('Masukkan email admin dulu, lalu tekan Forgot password lagi.');
+      return;
+    }
+
+    try {
+      await sendPasswordResetEmail(auth, email);
+      setAuthError(`Link reset password sudah dikirim ke ${email}. Cek inbox atau spam.`);
+    } catch (err) {
+      console.error('Password reset failed', err);
+      setAuthError('Tidak bisa mengirim reset password. Pastikan email admin benar dan terdaftar di Firebase Auth.');
+    }
+  }
+
   function showDashboardNotice(message: string) {
     setNotificationMessage(message);
   }
@@ -1902,7 +1920,7 @@ export default function HouseApp() {
                   </label>
                   <button
                     type="button"
-                    onClick={() => setAuthError('Password reset is handled by the duty manager through Admin Team Access.')}
+                    onClick={handlePasswordReset}
                     style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', color: 'rgba(255,255,255,0.65)', textDecoration: 'underline', textUnderlineOffset: '3px', padding: 0 }}
                   >
                     Forgot password?
