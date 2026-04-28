@@ -539,6 +539,147 @@ body,
   height: clamp(15rem, 26vw, 19rem) !important;
 }
 
+.admin-revenue-toolbar {
+  align-items: center !important;
+}
+
+.admin-revenue-range-toggle {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: min(100%, 23rem);
+  max-width: 100%;
+  gap: 0.35rem !important;
+  padding: 0.35rem !important;
+  overflow: hidden;
+  border-radius: 1.15rem !important;
+  background: linear-gradient(180deg, rgba(244, 243, 241, 0.96), rgba(233, 232, 230, 0.72)) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72), 0 10px 24px rgba(26, 28, 27, 0.045);
+}
+
+.admin-revenue-range-toggle button {
+  width: 100%;
+  min-width: 0 !important;
+  min-height: 2.55rem !important;
+  padding-inline: 0.75rem !important;
+  border-radius: 0.85rem !important;
+  box-shadow: none !important;
+  letter-spacing: 0.02em !important;
+}
+
+.admin-revenue-kpi-grid {
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)) !important;
+  align-items: stretch;
+}
+
+.admin-revenue-kpi-card {
+  min-height: 10.75rem;
+  padding: clamp(1.35rem, 2.2vw, 1.85rem) !important;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.admin-revenue-kpi-card h3 {
+  font-size: clamp(1.65rem, 3vw, 2.35rem) !important;
+  line-height: 1.08 !important;
+  overflow-wrap: anywhere;
+}
+
+.admin-confirm-backdrop {
+  background:
+    radial-gradient(circle at 50% 24%, rgba(255, 255, 255, 0.2), transparent 20rem),
+    rgba(26, 28, 27, 0.42) !important;
+}
+
+.admin-confirm-modal {
+  width: min(100%, 31rem) !important;
+  padding: clamp(1.55rem, 3vw, 2rem) !important;
+  border: 1px solid rgba(209, 197, 180, 0.42);
+  border-radius: 1.65rem !important;
+  background:
+    linear-gradient(135deg, rgba(255, 251, 246, 0.98), rgba(255, 255, 255, 0.96)),
+    #fff !important;
+  box-shadow:
+    0 34px 90px rgba(26, 28, 27, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85) !important;
+  transform: translateY(0);
+  animation: admin-confirm-enter 180ms ease-out both;
+}
+
+.admin-confirm-header {
+  align-items: flex-start !important;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid rgba(209, 197, 180, 0.28);
+}
+
+.admin-confirm-icon {
+  width: 3rem;
+  height: 3rem;
+  min-width: 3rem;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  border-radius: 1rem;
+  background: linear-gradient(180deg, rgba(255, 218, 214, 0.94), rgba(255, 218, 214, 0.62));
+  border: 1px solid rgba(186, 26, 26, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.admin-confirm-copy {
+  margin: 1.15rem 0 1.35rem;
+  padding: clamp(1.05rem, 2vw, 1.25rem);
+  border-radius: 1.15rem;
+  background:
+    linear-gradient(180deg, rgba(244, 243, 241, 0.9), rgba(250, 249, 247, 0.95));
+  border: 1px solid rgba(209, 197, 180, 0.36);
+}
+
+.admin-confirm-actions {
+  display: grid !important;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 0.8rem !important;
+}
+
+.admin-confirm-actions button {
+  width: 100%;
+  min-height: 3.25rem;
+  padding: 0.85rem 1.1rem !important;
+  white-space: normal !important;
+  border-radius: 1rem !important;
+}
+
+.admin-confirm-cancel {
+  background: rgba(255, 255, 255, 0.72) !important;
+  color: var(--am-variant) !important;
+  box-shadow: var(--am-shadow-bezel);
+}
+
+.admin-confirm-execute {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+  background: linear-gradient(180deg, #c82828, #a31313) !important;
+  color: #fff !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 16px 28px rgba(186, 26, 26, 0.26) !important;
+}
+
+.admin-confirm-execute:disabled,
+.admin-confirm-cancel:disabled {
+  opacity: 0.68;
+}
+
+@keyframes admin-confirm-enter {
+  from {
+    opacity: 0;
+    transform: translateY(0.6rem) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 .admin-page-settings input,
 .admin-page-settings textarea,
 .admin-page-settings select,
@@ -574,17 +715,23 @@ body,
 .admin-modal-backdrop {
   padding: clamp(1rem, 3vw, 2rem) !important;
   align-items: center !important;
+  background:
+    radial-gradient(circle at 50% 18%, rgba(255, 255, 255, 0.22), transparent 22rem),
+    rgba(26, 28, 27, 0.38) !important;
+  -webkit-backdrop-filter: blur(14px) saturate(1.05) !important;
+  backdrop-filter: blur(14px) saturate(1.05) !important;
 }
 
 .admin-menu-modal {
   width: min(100%, 46rem) !important;
   max-height: min(88vh, 56rem) !important;
   border: 1px solid rgba(209, 197, 180, 0.4);
-  border-radius: 1.25rem !important;
+  border-radius: 1.55rem !important;
   background:
-    radial-gradient(circle at 100% 0%, rgba(197, 160, 89, 0.1), transparent 16rem),
+    radial-gradient(circle at 100% 0%, rgba(197, 160, 89, 0.14), transparent 16rem),
+    linear-gradient(135deg, rgba(255, 251, 246, 0.98), rgba(255, 255, 255, 0.96)),
     #fff !important;
-  box-shadow: 0 30px 70px rgba(26, 28, 27, 0.24) !important;
+  box-shadow: 0 34px 86px rgba(26, 28, 27, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.78) !important;
 }
 
 .admin-staff-modal {
@@ -602,17 +749,18 @@ body,
 .admin-menu-modal-header,
 .admin-menu-modal-body,
 .admin-menu-modal-footer {
-  padding-inline: clamp(1.35rem, 3vw, 2rem) !important;
+  padding-inline: clamp(1.6rem, 3.25vw, 2.35rem) !important;
 }
 
 .admin-menu-modal-header {
-  padding-top: clamp(1.35rem, 3vw, 2rem) !important;
-  padding-bottom: 1.15rem !important;
+  padding-top: clamp(1.6rem, 3.25vw, 2.35rem) !important;
+  padding-bottom: 1.25rem !important;
+  border-color: rgba(209, 197, 180, 0.3) !important;
 }
 
 .admin-menu-modal-body {
-  gap: 1.25rem !important;
-  padding-block: 1.5rem !important;
+  gap: 1.35rem !important;
+  padding-block: 1.65rem !important;
 }
 
 .admin-menu-modal-body input,
@@ -636,8 +784,9 @@ body,
 .admin-menu-modal-footer {
   display: grid !important;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.875rem !important;
-  padding-bottom: clamp(1.35rem, 3vw, 2rem) !important;
+  gap: 0.95rem !important;
+  padding-top: 0.25rem !important;
+  padding-bottom: clamp(1.6rem, 3.25vw, 2.35rem) !important;
 }
 
 .admin-menu-modal-footer button {
@@ -645,7 +794,7 @@ body,
   min-height: 2.9rem;
   justify-self: stretch;
   padding-inline: 1rem !important;
-  border-radius: 0.9rem !important;
+  border-radius: 1rem !important;
   box-shadow: var(--am-shadow-bezel);
   font-size: 0.78rem !important;
   letter-spacing: 0.12em !important;
@@ -799,9 +948,18 @@ body,
     --am-sidebar: 15.75rem;
   }
 
+  .admin-dashboard {
+    min-width: 0;
+  }
+
+  .admin-topbar {
+    width: calc(100% - var(--am-sidebar)) !important;
+    padding-inline: clamp(1.5rem, 3vw, 2.25rem) !important;
+  }
+
   .admin-canvas {
     max-width: 100%;
-    padding-inline: clamp(2rem, 4vw, 3rem);
+    padding-inline: clamp(1.5rem, 3.25vw, 2.5rem);
   }
 
   .admin-page h2 {
@@ -814,6 +972,42 @@ body,
 
   .admin-notification-bar {
     top: calc(5.75rem + env(safe-area-inset-top));
+  }
+
+  .admin-revenue-toolbar {
+    align-items: flex-start !important;
+  }
+
+  .admin-revenue-range-toggle {
+    width: min(100%, 21rem);
+  }
+
+  .admin-revenue-range-toggle button {
+    min-width: 0 !important;
+  }
+
+  .admin-revenue-kpi-grid {
+    gap: 1rem !important;
+  }
+
+  .admin-revenue-kpi-card {
+    min-height: 9.75rem;
+  }
+
+  .admin-page-orders .space-y-6 > div {
+    min-height: auto;
+  }
+
+  .admin-page-orders .space-y-6 > div > div:first-child {
+    width: min(17rem, 34%) !important;
+  }
+
+  .admin-page-menu article {
+    min-height: 25.5rem;
+  }
+
+  .admin-page-revenue > .grid:last-child {
+    gap: 2rem !important;
   }
 }
 
@@ -839,6 +1033,54 @@ body,
 
   .admin-shell-search input {
     min-height: 2.75rem;
+  }
+
+  .admin-revenue-toolbar {
+    width: 100%;
+    align-items: stretch !important;
+  }
+
+  .admin-revenue-toolbar > button,
+  .admin-revenue-range-toggle {
+    width: 100%;
+  }
+
+  .admin-revenue-range-toggle {
+    border-radius: 1rem !important;
+  }
+
+  .admin-revenue-range-toggle button {
+    min-width: 0 !important;
+    padding-inline: 0.75rem !important;
+  }
+
+  .admin-revenue-kpi-grid {
+    grid-template-columns: 1fr !important;
+    gap: 1rem !important;
+  }
+
+  .admin-revenue-kpi-card {
+    min-height: 9.25rem;
+  }
+
+  .admin-confirm-modal {
+    max-height: min(86vh, 36rem);
+    overflow-y: auto;
+    padding: 1.35rem !important;
+  }
+
+  .admin-confirm-actions {
+    grid-template-columns: 1fr !important;
+  }
+
+  .admin-menu-modal-header,
+  .admin-menu-modal-body,
+  .admin-menu-modal-footer {
+    padding-inline: 1.25rem !important;
+  }
+
+  .admin-menu-modal-footer {
+    grid-template-columns: 1fr !important;
   }
 
   .admin-hours-row {

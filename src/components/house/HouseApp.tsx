@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   addDoc,
   collection,
+  deleteField,
   deleteDoc,
   doc,
   getDoc,
@@ -15,7 +16,7 @@ import {
 } from 'firebase/firestore';
 import { User, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { auth, db, firebaseConfig } from '../../lib/firebase';
-import { createGuestQrToken, revokeGuestSessionAsAdmin } from '../../lib/adminAccess';
+import { createGuestQrToken } from '../../lib/adminAccess';
 import {
   createAdminUser,
   deleteAdminUser,
@@ -139,6 +140,17 @@ interface RevenueTrendPoint {
   value: number;
 }
 
+interface ConfirmDialogState {
+  title: string;
+  message: string;
+  detail?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  tone?: 'danger' | 'warning';
+  icon?: string;
+  onConfirm: () => void | Promise<void>;
+}
+
 interface OperatingHour {
   day: OperatingDayName;
   enabled: boolean;
@@ -169,6 +181,8 @@ const TERMINAL_STATUSES = new Set(['delivered', 'completed', 'cancelled']);
 const SLA_THRESHOLD_MS = 20 * 60 * 1000; // 20 minutes
 const CLOUD_WRITE_TIMEOUT_MS = 8000;
 const LOCAL_SHIFT_NOTES_KEY = 'admindashboardcomponent_shift_notes';
+const LOCAL_PRODUCTS_KEY = 'admindashboardcomponent_menu_products';
+const LOCAL_HIDDEN_ORDER_IDS_KEY = 'admindashboardcomponent_hidden_order_ids';
 
 const STATUS_COLORS: Record<string, string> = {
   incoming: 'bg-blue-50 text-blue-800',
@@ -253,6 +267,11 @@ async function fetchJsonWithTimeout<T>(url: string, init?: RequestInit): Promise
   }
 }
 
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  const token = await auth.currentUser?.getIdToken().catch(() => '');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function patchFirestoreDocument(
   collectionName: string,
   docId: string,
@@ -265,7 +284,7 @@ async function patchFirestoreDocument(
     `${getFirestoreRestBaseUrl()}/${collectionName}/${encodeURIComponent(docId)}?key=${firebaseConfig.apiKey}&${updateMask}`,
     {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...await getAuthHeaders() },
       body: JSON.stringify({
         fields: Object.fromEntries(Object.entries(payload).map(([key, value]) => [key, writeFirestoreRestValue(value)])),
       }),
@@ -278,7 +297,7 @@ async function createFirestoreDocument(collectionName: string, payload: Record<s
     `${getFirestoreRestBaseUrl()}/${collectionName}?key=${firebaseConfig.apiKey}`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...await getAuthHeaders() },
       body: JSON.stringify({
         fields: Object.fromEntries(Object.entries(payload).map(([key, value]) => [key, writeFirestoreRestValue(value)])),
       }),
@@ -294,6 +313,119 @@ function withTimeout<T>(promise: Promise<T>, message = 'timeout'): Promise<T> {
       window.setTimeout(() => reject(new Error(message)), CLOUD_WRITE_TIMEOUT_MS);
     }),
   ]);
+}
+
+function loadLocalProducts(): MenuProduct[] {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_PRODUCTS_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw) as MenuProduct[];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalProducts(products: MenuProduct[]): void {
+  const prioritizedProducts = products.slice(0, 200);
+  const attempts = [prioritizedProducts, prioritizedProducts.slice(0, 75), prioritizedProducts.slice(0, 25), prioritizedProducts.slice(0, 10), prioritizedProducts.slice(0, 5), prioritizedProducts.slice(0, 1)];
+
+  for (const attempt of attempts) {
+    try {
+      window.localStorage.setItem(LOCAL_PRODUCTS_KEY, JSON.stringify(attempt));
+      return;
+    } catch {
+      // Keep trying smaller snapshots so the newest menu edit still survives quota pressure.
+    }
+  }
+}
+
+function upsertLocalProduct(product: MenuProduct): void {
+  const current = loadLocalProducts();
+  const next = [product, ...current.filter((item) => item.id !== product.id)];
+  saveLocalProducts(next);
+}
+
+function removeLocalProduct(productId: string): void {
+  saveLocalProducts(loadLocalProducts().filter((item) => item.id !== productId));
+}
+
+function mergeProducts(remoteProducts: MenuProduct[]): MenuProduct[] {
+  const byId = new Map<string, MenuProduct>();
+  for (const product of [...remoteProducts, ...loadLocalProducts()]) {
+    byId.set(product.id, product);
+  }
+  return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      result ? resolve(result) : reject(new Error('empty-image'));
+    };
+    reader.onerror = () => reject(new Error('image-read-failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function compressMenuImage(dataUrl: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      const targets = [
+        { maxSize: 1280, quality: 0.82 },
+        { maxSize: 960, quality: 0.76 },
+        { maxSize: 720, quality: 0.7 },
+      ];
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      if (!context) {
+        reject(new Error('canvas-unavailable'));
+        return;
+      }
+
+      let output = dataUrl;
+      for (const target of targets) {
+        const scale = Math.min(1, target.maxSize / Math.max(image.width, image.height));
+        const width = Math.max(1, Math.round(image.width * scale));
+        const height = Math.max(1, Math.round(image.height * scale));
+        canvas.width = width;
+        canvas.height = height;
+        context.clearRect(0, 0, width, height);
+        context.drawImage(image, 0, 0, width, height);
+        output = canvas.toDataURL('image/jpeg', target.quality);
+        if (output.length < 850_000) break;
+      }
+
+      resolve(output);
+    };
+    image.onerror = () => reject(new Error('image-load-failed'));
+    image.src = dataUrl;
+  });
+}
+
+async function prepareMenuImage(file: File): Promise<string> {
+  const dataUrl = await readFileAsDataUrl(file);
+  if (file.type === 'image/svg+xml') return dataUrl;
+  try {
+    return await compressMenuImage(dataUrl);
+  } catch {
+    return dataUrl;
+  }
+}
+
+function loadLocalHiddenOrderIds(): string[] {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_HIDDEN_ORDER_IDS_KEY);
+    return raw ? JSON.parse(raw) as string[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalHiddenOrderIds(orderIds: string[]): void {
+  window.localStorage.setItem(LOCAL_HIDDEN_ORDER_IDS_KEY, JSON.stringify(Array.from(new Set(orderIds)).slice(0, 300)));
 }
 
 function loadLocalShiftNotes(): ShiftNote[] {
@@ -478,6 +610,10 @@ function getOrderNextAction(status: string): { label: string; nextStatus: string
 function isOrderSlaBreached(order: DashboardOrder): boolean {
   if (!order.createdAt || TERMINAL_STATUSES.has(order.status)) return false;
   return Date.now() - order.createdAt.getTime() > SLA_THRESHOLD_MS;
+}
+
+function canRevokeOrderAccess(order: DashboardOrder): boolean {
+  return !TERMINAL_STATUSES.has(order.status) && Boolean(order.guestUid || order.accessTokenId);
 }
 
 function normalizeProduct(docId: string, data: Record<string, unknown>): MenuProduct {
@@ -716,8 +852,10 @@ export default function HouseApp() {
   const [revenueRange, setRevenueRange] = useState<'daily' | 'weekly' | 'monthly'>('daily');
   const [ordersAttentionOnly, setOrdersAttentionOnly] = useState(false);
   const [isOrderIntakePaused, setIsOrderIntakePaused] = useState(false);
+  const [hiddenOrderIds, setHiddenOrderIds] = useState<string[]>(() => loadLocalHiddenOrderIds());
   const [busyActionId, setBusyActionId] = useState<string | null>(null);
   const [isSavingProduct, setIsSavingProduct] = useState(false);
+  const [isProcessingMenuImage, setIsProcessingMenuImage] = useState(false);
 
   // Settings / QR
   const [hotelId, setHotelId] = useState('');
@@ -737,7 +875,8 @@ export default function HouseApp() {
   const [staffEditor, setStaffEditor] = useState<StaffEditorState | null>(null);
   const [isSavingStaff, setIsSavingStaff] = useState(false);
   const [passwordResetUid, setPasswordResetUid] = useState<string | null>(null);
-  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  const [isConfirmingDialog, setIsConfirmingDialog] = useState(false);
 
   // Shift handover
   const [activeShift, setActiveShift] = useState<ShiftName>('morning');
@@ -758,8 +897,8 @@ export default function HouseApp() {
     [orders],
   );
   const activeOrders = useMemo(
-    () => orders.filter((o) => !TERMINAL_STATUSES.has(o.status)),
-    [orders],
+    () => orders.filter((o) => !hiddenOrderIds.includes(o.id) && !TERMINAL_STATUSES.has(o.status)),
+    [hiddenOrderIds, orders],
   );
   const slaBreachedCount = useMemo(
     () => orders.filter(isOrderSlaBreached).length,
@@ -1028,12 +1167,12 @@ export default function HouseApp() {
       if (e.key === 'Escape') {
         if (staffEditor) { setStaffEditor(null); return; }
         if (editingProduct) { setEditingProduct(null); return; }
-        if (confirmDialog) { setConfirmDialog(null); return; }
+        if (confirmDialog && !isConfirmingDialog) { setConfirmDialog(null); return; }
       }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [staffEditor, editingProduct, confirmDialog]);
+  }, [staffEditor, editingProduct, confirmDialog, isConfirmingDialog]);
 
   /* ── Auth ── */
   useEffect(() => {
@@ -1082,7 +1221,7 @@ export default function HouseApp() {
     );
 
     const unsubProducts = onSnapshot(collection(db, 'products'), (snap) => {
-      setProducts(snap.docs.map((d) => normalizeProduct(d.id, d.data() as Record<string, unknown>)));
+      setProducts(mergeProducts(snap.docs.map((d) => normalizeProduct(d.id, d.data() as Record<string, unknown>))));
     });
 
     const unsubNotes = onSnapshot(
@@ -1206,6 +1345,32 @@ export default function HouseApp() {
       });
     } catch {
       // audit must never crash the main action
+    }
+  }
+
+  function hasManagerAccess(action: string): boolean {
+    if (identity?.role === 'manager') return true;
+    showDashboardNotice(`Manager account required to ${action}.`);
+    return false;
+  }
+
+  function hideOrderLocally(orderId: string): void {
+    setHiddenOrderIds((current) => {
+      const next = Array.from(new Set([orderId, ...current]));
+      saveLocalHiddenOrderIds(next);
+      return next;
+    });
+  }
+
+  async function executeConfirmDialogAction() {
+    if (!confirmDialog || isConfirmingDialog) return;
+    const action = confirmDialog.onConfirm;
+    setIsConfirmingDialog(true);
+    try {
+      await action();
+      setConfirmDialog(null);
+    } finally {
+      setIsConfirmingDialog(false);
     }
   }
 
@@ -1352,6 +1517,46 @@ export default function HouseApp() {
     showDashboardNotice(`Follow-up for Suite ${order.roomNumber} marked for resolution.`);
   }
 
+  function deleteFeedback(order: DashboardOrder) {
+    if (!hasManagerAccess('delete feedback')) return;
+    setConfirmDialog({
+      title: 'Delete Feedback',
+      message: `Delete feedback from Suite ${order.roomNumber}?`,
+      detail: 'This clears the rating, written feedback, summary, and follow-up flag from the order while keeping the order record itself.',
+      confirmLabel: 'Delete Feedback',
+      icon: 'reviews',
+      onConfirm: () => executeDeleteFeedback(order.id),
+    });
+  }
+
+  async function executeDeleteFeedback(orderId: string) {
+    if (!hasManagerAccess('delete feedback')) return;
+    const order = orders.find((item) => item.id === orderId);
+    setBusyActionId(`delete-feedback-${orderId}`);
+    try {
+      await updateDoc(doc(db, 'orders', orderId), {
+        feedbackDetails: deleteField(),
+        feedback: deleteField(),
+        reviewSummary: deleteField(),
+        rating: deleteField(),
+        requestManagerFollowUp: deleteField(),
+        updatedAt: serverTimestamp(),
+      });
+      setOrders((rows) => rows.map((item) => (
+        item.id === orderId
+          ? { ...item, feedbackText: '', feedbackSummary: '', rating: null, managerFollowUpRequested: false }
+          : item
+      )));
+      await logAudit('delete_feedback', 'order', orderId, { roomNumber: order?.roomNumber });
+      showDashboardNotice(`Feedback from Suite ${order?.roomNumber || 'order'} deleted.`);
+    } catch (err) {
+      console.error('Failed to delete feedback', err);
+      showDashboardNotice('Could not delete feedback. Check Firebase permission or connection.');
+    } finally {
+      setBusyActionId(null);
+    }
+  }
+
   async function saveSettingsDraft() {
     if (!identity) return;
     const settingsId = hotelId.trim() || identity.hotelId || identity.uid;
@@ -1421,100 +1626,200 @@ export default function HouseApp() {
     }
   }
 
-  async function toggleProductAvailability(product: MenuProduct) {
-    const next = !product.isAvailable;
-    setBusyActionId(`product-${product.id}`);
+  function deleteOrder(order: DashboardOrder) {
+    if (!hasManagerAccess('delete orders')) return;
+    setConfirmDialog({
+      title: 'Delete Order',
+      message: `Delete Suite ${order.roomNumber} order from Live Orders?`,
+      detail: 'This removes the order document from the dashboard and revenue calculations. Use Revoke Access when the guest session also needs to be blocked.',
+      confirmLabel: 'Delete Order',
+      icon: 'delete',
+      onConfirm: () => executeDeleteOrder(order.id),
+    });
+  }
+
+  async function executeDeleteOrder(orderId: string) {
+    if (!hasManagerAccess('delete orders')) return;
+    const order = orders.find((item) => item.id === orderId);
+    setBusyActionId(`delete-order-${orderId}`);
     try {
-      await updateDoc(doc(db, 'products', product.id), {
-        isAvailable: next,
-        unavailableReason: next ? '' : (product.unavailableReason || 'Temporarily unavailable'),
-        updatedAt: serverTimestamp(),
-      });
-      await logAudit(next ? 'set_available' : 'set_unavailable', 'product', product.id, { name: product.name });
-      showDashboardNotice(`${product.name} is now ${next ? 'available' : 'offline'}.`);
+      await deleteDoc(doc(db, 'orders', orderId));
+      hideOrderLocally(orderId);
+      setOrders((currentRows) => currentRows.filter((item) => item.id !== orderId));
+      await logAudit('delete_order', 'order', orderId, { roomNumber: order?.roomNumber, status: order?.status });
+      showDashboardNotice(`Suite ${order?.roomNumber || 'order'} deleted.`);
     } catch (err) {
-      console.error('Failed to update product availability', err);
-      showDashboardNotice(`Could not update ${product.name}. Check Firebase permission or connection.`);
+      console.error('Failed to delete order', err);
+      try {
+        await updateOrderStatusDocument(orderId, 'cancelled');
+      } catch (cancelErr) {
+        console.warn('Delete fallback cancel failed; hiding order locally.', cancelErr);
+      }
+      hideOrderLocally(orderId);
+      setOrders((currentRows) => currentRows.map((item) => (
+        item.id === orderId ? { ...item, status: 'cancelled', isRead: true } : item
+      )));
+      showDashboardNotice(`Suite ${order?.roomNumber || 'order'} removed from this dashboard. Deploy Firestore rules to allow hard delete.`);
     } finally {
       setBusyActionId(null);
     }
   }
 
-  function handleMenuImageUpload(file: File | undefined) {
+  async function toggleProductAvailability(product: MenuProduct) {
+    const next = !product.isAvailable;
+    const updatedProduct = {
+      ...product,
+      isAvailable: next,
+      unavailableReason: next ? '' : (product.unavailableReason || 'Temporarily unavailable'),
+    };
+    setBusyActionId(`product-${product.id}`);
+    setProducts((rows) => rows.map((item) => item.id === product.id ? updatedProduct : item));
+    try {
+      if (product.id.startsWith('local-product-')) {
+        upsertLocalProduct(updatedProduct);
+      } else {
+        await withTimeout(updateDoc(doc(db, 'products', product.id), {
+          isAvailable: next,
+          unavailableReason: updatedProduct.unavailableReason,
+          updatedAt: serverTimestamp(),
+        }), 'product-toggle-timeout');
+        upsertLocalProduct(updatedProduct);
+        await logAudit(next ? 'set_available' : 'set_unavailable', 'product', product.id, { name: product.name });
+      }
+      showDashboardNotice(`${product.name} is now ${next ? 'available' : 'offline'}.`);
+    } catch (err) {
+      console.error('Failed to update product availability', err);
+      upsertLocalProduct(updatedProduct);
+      showDashboardNotice(`${product.name} updated on this dashboard. Deploy Firestore rules to sync availability.`);
+    } finally {
+      setBusyActionId(null);
+    }
+  }
+
+  async function handleMenuImageUpload(file: File | undefined) {
     if (!file || !editingProduct) return;
     if (!file.type.startsWith('image/')) {
       showDashboardNotice('Please upload an image file for the menu item.');
       return;
     }
-    if (file.size > 1_200_000) {
-      showDashboardNotice('Image is too large. Use an image under 1.2 MB.');
+    if (file.size > 3_000_000) {
+      showDashboardNotice('Image is too large. Use an image under 3 MB.');
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const image = typeof reader.result === 'string' ? reader.result : '';
-      if (!image) {
-        showDashboardNotice('Could not read the selected image.');
-        return;
-      }
-      setEditingProduct((current) => current ? { ...current, image } : current);
+    const editorId = editingProduct.id;
+    setIsProcessingMenuImage(true);
+    try {
+      const image = await prepareMenuImage(file);
+      setEditingProduct((current) => {
+        if (!current || current.id !== editorId) return current;
+        return { ...current, image };
+      });
       showDashboardNotice('Image uploaded into the menu editor.');
-    };
-    reader.onerror = () => showDashboardNotice('Could not read the selected image.');
-    reader.readAsDataURL(file);
+    } catch (err) {
+      console.error('Failed to upload menu image', err);
+      showDashboardNotice('Could not read the selected image.');
+    } finally {
+      setIsProcessingMenuImage(false);
+    }
   }
 
   async function saveProduct(editor: MenuEditorState) {
-    if (!editor.name.trim()) {
+    const name = editor.name.trim();
+    const category = editor.category.trim() || 'Mains';
+    const numericPrice = Number(editor.price);
+
+    if (!name) {
       showDashboardNotice('Menu item name is required.');
       return;
     }
+    if (!Number.isFinite(numericPrice) || numericPrice < 0) {
+      showDashboardNotice('Use a valid menu price before saving.');
+      return;
+    }
+
     setIsSavingProduct(true);
+    const updatedAt = new Date();
     const payload = {
-      name: editor.name.trim(), category: editor.category.trim(),
-      price: Number(editor.price) || 0, description: editor.description.trim(),
+      name, category,
+      price: numericPrice, description: editor.description.trim(),
       image: editor.image.trim(), isAvailable: editor.isAvailable,
       unavailableReason: editor.unavailableReason.trim(), updatedAt: serverTimestamp(),
     };
+    const localId = editor.id || `local-product-${Date.now()}`;
+    const savedProduct: MenuProduct = {
+      id: localId,
+      sourceItemId: undefined,
+      name,
+      category,
+      price: numericPrice,
+      image: editor.image.trim(),
+      description: editor.description.trim(),
+      isAvailable: editor.isAvailable,
+      unavailableReason: editor.unavailableReason.trim(),
+    };
     try {
-      if (editor.id) {
-        await updateDoc(doc(db, 'products', editor.id), payload);
-        await logAudit('edit_product', 'product', editor.id, { name: editor.name });
-        showDashboardNotice(`${editor.name.trim()} updated in Menu Manager.`);
+      if (editor.id?.startsWith('local-product-')) {
+        setProducts((rows) => rows.map((item) => item.id === editor.id ? { ...savedProduct, id: editor.id as string } : item));
+        upsertLocalProduct({ ...savedProduct, id: editor.id });
+        showDashboardNotice(`${name} updated on this dashboard.`);
+      } else if (editor.id) {
+        await withTimeout(updateDoc(doc(db, 'products', editor.id), payload), 'save-menu-timeout');
+        setProducts((rows) => rows.map((item) => item.id === editor.id ? { ...savedProduct, id: editor.id as string } : item));
+        upsertLocalProduct({ ...savedProduct, id: editor.id });
+        await logAudit('edit_product', 'product', editor.id, { name, updatedAt: updatedAt.toISOString() });
+        showDashboardNotice(`${name} updated in Menu Manager.`);
       } else {
-        const ref = await addDoc(collection(db, 'products'), { ...payload, createdAt: serverTimestamp() });
-        await logAudit('add_product', 'product', ref.id, { name: editor.name });
-        showDashboardNotice(`${editor.name.trim()} added to Menu Manager.`);
+        const ref = await withTimeout(addDoc(collection(db, 'products'), { ...payload, createdAt: serverTimestamp() }), 'save-menu-timeout');
+        setProducts((rows) => [{ ...savedProduct, id: ref.id }, ...rows]);
+        upsertLocalProduct({ ...savedProduct, id: ref.id });
+        await logAudit('add_product', 'product', ref.id, { name, updatedAt: updatedAt.toISOString() });
+        showDashboardNotice(`${name} added to Menu Manager.`);
       }
       setEditingProduct(null);
     } catch (err) {
       console.error('Failed to save menu item', err);
-      showDashboardNotice('Could not save menu item. Check Firebase permission or connection.');
+      upsertLocalProduct(savedProduct);
+      setProducts((rows) => [savedProduct, ...rows.filter((item) => item.id !== savedProduct.id)]);
+      setEditingProduct(null);
+      showDashboardNotice(`${name} saved on this dashboard. Deploy Firestore rules to sync it to cloud.`);
     } finally {
       setIsSavingProduct(false);
     }
   }
 
   function deleteProduct(productId: string) {
+    if (!hasManagerAccess('remove menu items')) return;
     const product = products.find((p) => p.id === productId);
     setConfirmDialog({
       title: 'Remove Menu Item',
       message: `Remove ${product?.name || 'this menu item'} from Menu Manager? This action cannot be undone.`,
+      detail: 'Only manager accounts can delete menu data. Staff can still edit availability when permitted.',
+      confirmLabel: 'Remove Item',
+      icon: 'delete',
       onConfirm: () => executeDeleteProduct(productId),
     });
   }
 
   async function executeDeleteProduct(productId: string) {
+    if (!hasManagerAccess('remove menu items')) return;
     const product = products.find((p) => p.id === productId);
     setBusyActionId(`delete-product-${productId}`);
     try {
       await deleteDoc(doc(db, 'products', productId));
+      removeLocalProduct(productId);
+      setProducts((rows) => rows.filter((item) => item.id !== productId));
       await logAudit('delete_product', 'product', productId, { name: product?.name });
       showDashboardNotice(`${product?.name || 'Menu item'} removed from Menu Manager.`);
     } catch (err) {
       console.error('Failed to delete product', err);
-      showDashboardNotice('Could not remove menu item. Check Firebase permission or connection.');
+      if (productId.startsWith('local-product-')) {
+        removeLocalProduct(productId);
+        setProducts((rows) => rows.filter((item) => item.id !== productId));
+        showDashboardNotice(`${product?.name || 'Menu item'} removed from this dashboard.`);
+      } else {
+        showDashboardNotice('Could not remove menu item. Check Firebase permission or connection.');
+      }
     } finally {
       setBusyActionId(null);
     }
@@ -1553,23 +1858,74 @@ export default function HouseApp() {
     }
   }
 
-  function handleRevokeGuest(guestUid: string) {
+  function handleRevokeOrder(order: DashboardOrder) {
+    if (!hasManagerAccess('revoke guest access')) return;
+    if (!canRevokeOrderAccess(order)) {
+      showDashboardNotice('This order has no active guest session or access token to revoke.');
+      return;
+    }
     setConfirmDialog({
-      title: 'Revoke Guest Session',
-      message: 'Revoke this guest session? The guest will need to request a new QR access link.',
-      onConfirm: () => executeRevokeGuest(guestUid),
+      title: 'Revoke Order Access',
+      message: `Revoke access for Suite ${order.roomNumber}?`,
+      detail: 'The guest QR/session token will stop working immediately and this order will be marked cancelled so it no longer stays in the active queue.',
+      confirmLabel: 'Revoke Order',
+      cancelLabel: 'Keep Active',
+      icon: 'block',
+      onConfirm: () => executeRevokeOrder(order),
     });
   }
 
-  async function executeRevokeGuest(guestUid: string) {
-    setRevokingSessionId(guestUid);
+  async function executeRevokeOrder(order: DashboardOrder) {
+    if (!hasManagerAccess('revoke guest access')) return;
+    if (!canRevokeOrderAccess(order)) return;
+
+    const busyId = `revoke-order-${order.id}`;
+    setRevokingSessionId(busyId);
     try {
-      await revokeGuestSessionAsAdmin(guestUid);
-      await logAudit('revoke_guest_session', 'guestSession', guestUid);
-      showDashboardNotice('Guest session revoked. The guest must request a new QR access link.');
+      await updateDoc(doc(db, 'orders', order.id), {
+        status: 'cancelled',
+        isRead: true,
+        updatedAt: serverTimestamp(),
+      });
+
+      const revocationWrites: Promise<unknown>[] = [];
+
+      if (order.guestUid) {
+        revocationWrites.push(setDoc(doc(db, 'guest_access_sessions', order.guestUid), {
+          status: 'revoked',
+          expiresAt: serverTimestamp(),
+          revokedAt: serverTimestamp(),
+          revokedBy: identity?.uid || 'manager',
+        }, { merge: true }));
+      }
+
+      if (order.accessTokenId) {
+        revocationWrites.push(setDoc(doc(db, 'guest_access_tokens', order.accessTokenId), {
+          status: 'revoked',
+          expiresAt: serverTimestamp(),
+          revokedAt: serverTimestamp(),
+          revokedBy: identity?.uid || 'manager',
+        }, { merge: true }));
+      }
+
+      const revocationResults = await Promise.allSettled(revocationWrites);
+      const failedRevocationWrites = revocationResults.filter((result) => result.status === 'rejected');
+      setOrders((rows) => rows.map((item) => (
+        item.id === order.id ? { ...item, status: 'cancelled', isRead: true } : item
+      )));
+      await logAudit('revoke_order_access', 'order', order.id, {
+        guestUid: order.guestUid || null,
+        accessTokenId: order.accessTokenId || null,
+        sessionWritesBlocked: failedRevocationWrites.length > 0,
+      });
+      showDashboardNotice(
+        failedRevocationWrites.length > 0
+          ? `Suite ${order.roomNumber} cancelled. Deploy updated Firestore rules to block the guest token/session too.`
+          : `Suite ${order.roomNumber} revoked and removed from the active queue.`,
+      );
     } catch (err) {
-      console.error('Failed to revoke guest session', err);
-      showDashboardNotice('Could not revoke guest session. Check Firebase callable functions and permission.');
+      console.error('Failed to revoke order access', err);
+      showDashboardNotice('Could not revoke this order. Check Firebase permission or connection.');
     } finally {
       setRevokingSessionId(null);
     }
@@ -1614,6 +1970,43 @@ export default function HouseApp() {
       showDashboardNotice('Handover note saved on this dashboard. Cloud sync is unavailable.');
     } finally {
       setIsSavingNote(false);
+    }
+  }
+
+  function deleteShiftNote(note: ShiftNote) {
+    if (!hasManagerAccess('delete handover notes')) return;
+    setConfirmDialog({
+      title: 'Delete Handover Note',
+      message: `Delete ${note.shift} shift note from ${note.authorName || 'operator'}?`,
+      detail: 'This removes the note from the handover board. Local fallback notes are removed from this device only.',
+      confirmLabel: 'Delete Note',
+      icon: 'delete',
+      onConfirm: () => executeDeleteShiftNote(note),
+    });
+  }
+
+  async function executeDeleteShiftNote(note: ShiftNote) {
+    if (!hasManagerAccess('delete handover notes')) return;
+    setBusyActionId(`delete-note-${note.id}`);
+    try {
+      if (note.id.startsWith('local-')) {
+        const nextLocalNotes = loadLocalShiftNotes().filter((item) => item.id !== note.id);
+        window.localStorage.setItem(LOCAL_SHIFT_NOTES_KEY, JSON.stringify(nextLocalNotes.map((item) => ({
+          ...item,
+          createdAt: item.createdAt ? item.createdAt.toISOString() : null,
+        }))));
+      } else {
+        await deleteDoc(doc(db, 'shiftNotes', note.id));
+      }
+
+      setShiftNotes((rows) => rows.filter((item) => item.id !== note.id));
+      await logAudit('delete_shift_note', 'shiftNote', note.id, { shift: note.shift });
+      showDashboardNotice('Handover note deleted.');
+    } catch (err) {
+      console.error('Failed to delete handover note', err);
+      showDashboardNotice('Could not delete handover note. Check Firebase permission or connection.');
+    } finally {
+      setBusyActionId(null);
     }
   }
 
@@ -1662,15 +2055,20 @@ export default function HouseApp() {
   }
 
   function removeStaffAccount(uid: string) {
+    if (!hasManagerAccess('remove staff accounts')) return;
     const staff = staffAccounts.find((account) => account.uid === uid);
     setConfirmDialog({
       title: 'Remove Staff Account',
       message: `Remove ${staff?.name || 'this staff account'} from admin access? This action cannot be undone.`,
+      detail: 'This removes dashboard access for the selected operator. Existing audit logs are kept.',
+      confirmLabel: 'Remove Staff',
+      icon: 'person_remove',
       onConfirm: () => executeRemoveStaffAccount(uid),
     });
   }
 
   async function executeRemoveStaffAccount(uid: string) {
+    if (!hasManagerAccess('remove staff accounts')) return;
     setTeamStatus('');
     try {
       await deleteAdminUser(uid);
@@ -2313,15 +2711,26 @@ export default function HouseApp() {
                                     {busyActionId === `read-${order.id}` ? 'Updating...' : 'Mark as Read'}
                                   </button>
                                 ) : null}
-                                {sla && (order.accessTokenId || order.guestUid) ? (
+                                {identity.role === 'manager' && canRevokeOrderAccess(order) ? (
                                   <button
                                     className="font-['Manrope'] text-sm font-medium text-[#ba1a1a] px-4 py-2 rounded border border-[#ba1a1a]/20 hover:bg-[#ffdad6] transition-colors disabled:opacity-50 flex items-center gap-1"
-                                    disabled={revokingSessionId === (order.accessTokenId || order.guestUid)}
-                                    onClick={() => handleRevokeGuest(order.accessTokenId || order.guestUid)}
+                                    disabled={revokingSessionId === `revoke-order-${order.id}`}
+                                    onClick={() => handleRevokeOrder(order)}
                                     type="button"
                                   >
                                     <span className="material-symbols-outlined text-[16px]">block</span>
-                                    {revokingSessionId === (order.accessTokenId || order.guestUid) ? 'Revoking...' : 'Revoke'}
+                                    {revokingSessionId === `revoke-order-${order.id}` ? 'Revoking...' : 'Revoke'}
+                                  </button>
+                                ) : null}
+                                {identity.role === 'manager' ? (
+                                  <button
+                                    className="font-['Manrope'] text-sm font-medium text-[#ba1a1a] px-4 py-2 rounded border border-[#ba1a1a]/20 hover:bg-[#ffdad6] transition-colors disabled:opacity-50 flex items-center gap-1"
+                                    disabled={busyActionId === `delete-order-${order.id}`}
+                                    onClick={() => deleteOrder(order)}
+                                    type="button"
+                                  >
+                                    <span className="material-symbols-outlined text-[16px]">delete</span>
+                                    {busyActionId === `delete-order-${order.id}` ? 'Deleting...' : 'Delete'}
                                   </button>
                                 ) : null}
                               </div>
@@ -2417,13 +2826,16 @@ export default function HouseApp() {
                               />
                               <div className="w-11 h-6 bg-[#e9e8e6] rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:border-[#e9e8e6] after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#775a19]" />
                             </label>
-                            <button
-                              className="text-[#ba1a1a] hover:text-[#93000a] transition-colors p-2 rounded-full hover:bg-[#ffdad6]"
-                              disabled={busyActionId === `delete-product-${product.id}`}
-                              onClick={() => deleteProduct(product.id)} type="button"
-                            >
-                              <span className="material-symbols-outlined text-[20px]">delete</span>
-                            </button>
+                            {identity.role === 'manager' ? (
+                              <button
+                                aria-label={`Remove ${product.name}`}
+                                className="text-[#ba1a1a] hover:text-[#93000a] transition-colors p-2 rounded-full hover:bg-[#ffdad6]"
+                                disabled={busyActionId === `delete-product-${product.id}`}
+                                onClick={() => deleteProduct(product.id)} type="button"
+                              >
+                                <span className="material-symbols-outlined text-[20px]">delete</span>
+                              </button>
+                            ) : null}
                           </div>
                         </div>
                       </div>
@@ -2543,9 +2955,16 @@ export default function HouseApp() {
                                 <p className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatFeedbackTime(feedbackHeroOrder.createdAt)}</p>
                               </div>
                             </div>
-                            <button className="text-[#775a19] font-['Manrope'] text-sm uppercase tracking-widest hover:text-[#c5a059] transition-colors" onClick={() => acknowledgeFeedback(feedbackHeroOrder)} type="button">
-                              Acknowledge
-                            </button>
+                            <div className="flex flex-wrap justify-end gap-2">
+                              <button className="text-[#775a19] font-['Manrope'] text-sm uppercase tracking-widest hover:text-[#c5a059] transition-colors" onClick={() => acknowledgeFeedback(feedbackHeroOrder)} type="button">
+                                Acknowledge
+                              </button>
+                              {identity.role === 'manager' ? (
+                                <button className="text-[#ba1a1a] font-['Manrope'] text-sm uppercase tracking-widest hover:bg-[#ffdad6] px-2 py-1 rounded transition-colors" disabled={busyActionId === `delete-feedback-${feedbackHeroOrder.id}`} onClick={() => deleteFeedback(feedbackHeroOrder)} type="button">
+                                  {busyActionId === `delete-feedback-${feedbackHeroOrder.id}` ? 'Deleting...' : 'Delete'}
+                                </button>
+                              ) : null}
+                            </div>
                           </div>
                         </article>
                       ) : null}
@@ -2577,9 +2996,16 @@ export default function HouseApp() {
                           </p>
                           <div className="flex justify-between items-end border-t border-[#e3e2e0]/50 pt-4">
                             <p className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatFeedbackTime(feedbackSideOrder.createdAt)}</p>
-                            <button className="text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest hover:text-[#c5a059] transition-colors" onClick={() => replyToFeedback(feedbackSideOrder)} type="button">
-                              Reply
-                            </button>
+                            <div className="flex flex-wrap justify-end gap-2">
+                              <button className="text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest hover:text-[#c5a059] transition-colors" onClick={() => replyToFeedback(feedbackSideOrder)} type="button">
+                                Reply
+                              </button>
+                              {identity.role === 'manager' ? (
+                                <button className="text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest hover:bg-[#ffdad6] px-2 py-1 rounded transition-colors" disabled={busyActionId === `delete-feedback-${feedbackSideOrder.id}`} onClick={() => deleteFeedback(feedbackSideOrder)} type="button">
+                                  {busyActionId === `delete-feedback-${feedbackSideOrder.id}` ? 'Deleting...' : 'Delete'}
+                                </button>
+                              ) : null}
+                            </div>
                           </div>
                         </article>
                       ) : null}
@@ -2617,9 +3043,16 @@ export default function HouseApp() {
                                 <p className="font-['Manrope'] text-xs text-[#ba1a1a] font-medium">Action Required</p>
                                 <p className="font-['Manrope'] text-xs text-[#5f5e5e]">{formatFeedbackTime(feedbackIssueOrder.createdAt)}</p>
                               </div>
-                              <button className="text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest hover:bg-[#ba1a1a]/5 px-2 py-1 rounded transition-colors" onClick={() => resolveFeedback(feedbackIssueOrder)} type="button">
-                                Resolve
-                              </button>
+                              <div className="flex flex-wrap justify-end gap-2">
+                                <button className="text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest hover:bg-[#ba1a1a]/5 px-2 py-1 rounded transition-colors" onClick={() => resolveFeedback(feedbackIssueOrder)} type="button">
+                                  Resolve
+                                </button>
+                                {identity.role === 'manager' ? (
+                                  <button className="text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest hover:bg-[#ffdad6] px-2 py-1 rounded transition-colors" disabled={busyActionId === `delete-feedback-${feedbackIssueOrder.id}`} onClick={() => deleteFeedback(feedbackIssueOrder)} type="button">
+                                    {busyActionId === `delete-feedback-${feedbackIssueOrder.id}` ? 'Deleting...' : 'Delete'}
+                                  </button>
+                                ) : null}
+                              </div>
                             </div>
                           </div>
                         </article>
@@ -2666,11 +3099,18 @@ export default function HouseApp() {
                               </ul>
                             </div>
                           </div>
-                          <div className="mt-6 flex justify-between items-center w-full md:hidden">
+                          <div className="mt-6 flex justify-between items-center w-full">
                             <p className="font-['Manrope'] text-xs text-[#5f5e5e]">{formatFeedbackTime(feedbackStoryOrder.createdAt)}</p>
-                            <button className="text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest hover:text-[#c5a059] transition-colors" onClick={() => acknowledgeFeedback(feedbackStoryOrder)} type="button">
-                              Acknowledge
-                            </button>
+                            <div className="flex flex-wrap justify-end gap-2">
+                              <button className="text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest hover:text-[#c5a059] transition-colors" onClick={() => acknowledgeFeedback(feedbackStoryOrder)} type="button">
+                                Acknowledge
+                              </button>
+                              {identity.role === 'manager' ? (
+                                <button className="text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest hover:bg-[#ffdad6] px-2 py-1 rounded transition-colors" disabled={busyActionId === `delete-feedback-${feedbackStoryOrder.id}`} onClick={() => deleteFeedback(feedbackStoryOrder)} type="button">
+                                  {busyActionId === `delete-feedback-${feedbackStoryOrder.id}` ? 'Deleting...' : 'Delete'}
+                                </button>
+                              ) : null}
+                            </div>
                           </div>
                         </article>
                       ) : null}
@@ -2690,8 +3130,8 @@ export default function HouseApp() {
                     <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight font-semibold">Revenue</h2>
                     <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm tracking-wide">Track financial performance and export reports for accounting.</p>
                   </div>
-                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-12">
-                    <div className="revenue-range-toggle flex gap-2 bg-[#f4f3f1] p-1 rounded-full border border-[#e3e2e0]/50">
+                  <div className="admin-revenue-toolbar flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-12">
+                    <div className="admin-revenue-range-toggle revenue-range-toggle flex gap-2 bg-[#f4f3f1] p-1 rounded-full border border-[#e3e2e0]/50">
                       {(['daily', 'weekly', 'monthly'] as const).map((range) => (
                         <button
                           key={range}
@@ -2715,8 +3155,8 @@ export default function HouseApp() {
                   </div>
 
                   {/* KPI Grid */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
-                    <div className="bg-white rounded-lg p-8 shadow-[0_20px_40px_rgba(26,28,27,0.06)] relative overflow-hidden group">
+                  <div className="admin-revenue-kpi-grid grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+                    <div className="admin-revenue-kpi-card bg-white rounded-lg p-8 shadow-[0_20px_40px_rgba(26,28,27,0.06)] relative overflow-hidden group">
                       <div className="absolute -right-8 -top-8 w-32 h-32 bg-[#c5a059]/10 rounded-full blur-2xl group-hover:bg-[#c5a059]/20 transition-all" />
                       <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Total Revenue</p>
                       <h3 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] mb-4 tracking-tight">{formatIdr(revenueOverview.revenue)}</h3>
@@ -2730,7 +3170,7 @@ export default function HouseApp() {
                         <span className="font-['Manrope'] text-xs text-[#5f5e5e]">vs last period</span>
                       </div>
                     </div>
-                    <div className="bg-[#f4f3f1] rounded-lg p-8 relative overflow-hidden border border-[#e3e2e0]/30">
+                    <div className="admin-revenue-kpi-card bg-[#f4f3f1] rounded-lg p-8 relative overflow-hidden border border-[#e3e2e0]/30">
                       <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Average Order Value</p>
                       <h3 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] mb-4 tracking-tight">{formatIdr(revenueOverview.averageOrderValue)}</h3>
                       <div className="flex items-center gap-2 text-sm">
@@ -2743,7 +3183,7 @@ export default function HouseApp() {
                         <span className="font-['Manrope'] text-xs text-[#5f5e5e]">vs last period</span>
                       </div>
                     </div>
-                    <div className="bg-[#f4f3f1] rounded-lg p-8 relative overflow-hidden border border-[#e3e2e0]/30">
+                    <div className="admin-revenue-kpi-card bg-[#f4f3f1] rounded-lg p-8 relative overflow-hidden border border-[#e3e2e0]/30">
                       <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Total Orders</p>
                       <h3 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] mb-4 tracking-tight">{revenueOverview.totalOrders}</h3>
                       <div className="flex items-center gap-2 text-sm">
@@ -2961,9 +3401,21 @@ export default function HouseApp() {
                                   <p className="font-['Manrope'] text-sm text-[#1a1c1b] leading-6">{note.note}</p>
                                   <div className="mt-2 flex items-center justify-between">
                                     <span className="font-['Manrope'] text-[10px] text-[#4e4639] font-semibold">{note.authorName}</span>
-                                    <span className="font-['Manrope'] text-[10px] text-[#4e4639]/70">
-                                      {note.createdAt ? note.createdAt.toLocaleString() : '—'}
-                                    </span>
+                                    <div className="flex items-center justify-end gap-2">
+                                      <span className="font-['Manrope'] text-[10px] text-[#4e4639]/70">
+                                        {note.createdAt ? note.createdAt.toLocaleString() : '—'}
+                                      </span>
+                                      {identity.role === 'manager' ? (
+                                        <button
+                                          className="text-[#ba1a1a] font-['Manrope'] text-[10px] uppercase tracking-widest hover:bg-[#ffdad6] px-2 py-1 rounded transition-colors"
+                                          disabled={busyActionId === `delete-note-${note.id}`}
+                                          onClick={() => deleteShiftNote(note)}
+                                          type="button"
+                                        >
+                                          {busyActionId === `delete-note-${note.id}` ? 'Deleting...' : 'Delete'}
+                                        </button>
+                                      ) : null}
+                                    </div>
                                   </div>
                                 </div>
                               ))}
@@ -3288,20 +3740,21 @@ export default function HouseApp() {
               </div>
               <div>
                 <label className="block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">Upload Image</label>
-                <label className="flex min-h-[3.25rem] cursor-pointer items-center justify-between gap-3 rounded-[14px] border border-dashed border-[#d1c5b4] bg-[#f4f3f1] px-4 py-3 font-['Manrope'] text-sm text-[#4e4639] transition hover:bg-[#ebe8e2]">
-                  <span className="truncate">Choose food photo</span>
+                <label className={`flex min-h-[3.25rem] items-center justify-between gap-3 rounded-[14px] border border-dashed border-[#d1c5b4] bg-[#f4f3f1] px-4 py-3 font-['Manrope'] text-sm text-[#4e4639] transition hover:bg-[#ebe8e2] ${isProcessingMenuImage ? 'cursor-wait opacity-70' : 'cursor-pointer'}`}>
+                  <span className="truncate">{isProcessingMenuImage ? 'Processing photo...' : 'Choose food photo'}</span>
                   <span className="material-symbols-outlined text-[20px] text-[#775a19]">upload</span>
                   <input
                     type="file"
                     accept="image/*"
                     className="sr-only"
+                    disabled={isProcessingMenuImage}
                     onChange={(e) => {
                       handleMenuImageUpload(e.target.files?.[0]);
                       e.currentTarget.value = '';
                     }}
                   />
                 </label>
-                <p className="mt-2 font-['Manrope'] text-[11px] leading-5 text-[#4e4639]/70">Uploads are stored in the menu image field. Use files under 1.2 MB.</p>
+                <p className="mt-2 font-['Manrope'] text-[11px] leading-5 text-[#4e4639]/70">Uploads are stored in the menu image field. Use files under 3 MB.</p>
               </div>
               {editingProduct.image?.trim() ? (
                 <div className="md:col-span-2">
@@ -3339,10 +3792,10 @@ export default function HouseApp() {
             <div className="admin-menu-modal-footer px-6 pb-6 flex flex-wrap gap-3">
               <button
                 className="bg-[#775a19] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#775a19]/90 transition-colors shadow-[0_4px_14px_rgba(119,90,25,0.2)]"
-                disabled={isSavingProduct}
+                disabled={isSavingProduct || isProcessingMenuImage}
                 onClick={() => saveProduct(editingProduct)} type="button"
               >
-                {isSavingProduct ? 'Saving...' : 'Save Item'}
+                {isSavingProduct ? 'Saving...' : isProcessingMenuImage ? 'Processing...' : 'Save Item'}
               </button>
               <button
                 className="border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#f4f3f1] transition-colors"
@@ -3437,27 +3890,40 @@ export default function HouseApp() {
         </div>
       ) : null}
       {confirmDialog ? (
-        <div className="admin-modal-backdrop fixed inset-0 z-[60] flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm" onClick={() => setConfirmDialog(null)}>
-          <div className="w-full max-w-sm rounded-2xl bg-white shadow-[0_20px_60px_rgba(26,28,27,0.24)] p-7" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-3 mb-4">
-              <span className="material-symbols-outlined text-[#ba1a1a] text-[22px]">warning</span>
-              <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">{confirmDialog.title}</h3>
+        <div
+          className="admin-modal-backdrop admin-confirm-backdrop fixed inset-0 z-[60] flex items-center justify-center bg-[#1a1c1b]/40 p-4 backdrop-blur-[6px]"
+          onClick={() => { if (!isConfirmingDialog) setConfirmDialog(null); }}
+        >
+          <div className="admin-confirm-modal w-full max-w-sm rounded-2xl bg-white shadow-[0_20px_60px_rgba(26,28,27,0.24)] p-7" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="admin-confirm-title">
+            <div className="admin-confirm-header flex items-center gap-3 mb-4">
+              <span className="admin-confirm-icon material-symbols-outlined text-[#ba1a1a] text-[22px]">{confirmDialog.icon || 'warning'}</span>
+              <div>
+                <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#ba1a1a]">Manager confirmation</p>
+                <h3 id="admin-confirm-title" className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">{confirmDialog.title}</h3>
+              </div>
             </div>
-            <p className="font-['Manrope'] text-sm text-[#4e4639] leading-relaxed mb-7">{confirmDialog.message}</p>
-            <div className="flex gap-3 justify-end">
+            <div className="admin-confirm-copy">
+              <p className="font-['Manrope'] text-sm font-semibold text-[#1a1c1b] leading-relaxed">{confirmDialog.message}</p>
+              {confirmDialog.detail ? (
+                <p className="mt-3 font-['Manrope'] text-sm text-[#4e4639] leading-relaxed">{confirmDialog.detail}</p>
+              ) : null}
+            </div>
+            <div className="admin-confirm-actions flex gap-3 justify-end">
               <button
                 type="button"
-                className="rounded-[14px] border border-[#d1c5b4]/50 px-5 py-2.5 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] text-[#4e4639] hover:bg-[#f4f3f1] transition-colors"
+                className="admin-confirm-cancel rounded-[14px] border border-[#d1c5b4]/50 px-5 py-2.5 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] text-[#4e4639] hover:bg-[#f4f3f1] transition-colors"
+                disabled={isConfirmingDialog}
                 onClick={() => setConfirmDialog(null)}
               >
-                Cancel
+                {confirmDialog.cancelLabel || 'Cancel'}
               </button>
               <button
                 type="button"
-                className="rounded-[14px] bg-[#ba1a1a] px-5 py-2.5 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] text-white hover:bg-[#93000a] transition-colors shadow-[0_8px_16px_rgba(186,26,26,0.2)]"
-                onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}
+                className="admin-confirm-execute rounded-[14px] bg-[#ba1a1a] px-5 py-2.5 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] text-white hover:bg-[#93000a] transition-colors shadow-[0_8px_16px_rgba(186,26,26,0.2)]"
+                disabled={isConfirmingDialog}
+                onClick={executeConfirmDialogAction}
               >
-                Confirm
+                {isConfirmingDialog ? 'Processing...' : confirmDialog.confirmLabel || 'Confirm'}
               </button>
             </div>
           </div>

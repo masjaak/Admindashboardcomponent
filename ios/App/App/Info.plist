@@ -24,6 +24,10 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Allow managers to capture menu item photos for the dashboard.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Allow managers to choose menu item photos for the dashboard.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
