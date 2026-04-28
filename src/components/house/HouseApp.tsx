@@ -15,6 +15,8 @@ import {
   updateDoc,
 } from 'firebase/firestore';
 import { User, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { Capacitor } from '@capacitor/core';
+import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { auth, db, firebaseConfig } from '../../lib/firebase';
 import { createGuestQrToken } from '../../lib/adminAccess';
 import {
@@ -413,6 +415,19 @@ async function prepareMenuImage(file: File): Promise<string> {
   } catch {
     return dataUrl;
   }
+}
+
+async function prepareMenuImageDataUrl(dataUrl: string): Promise<string> {
+  try {
+    return await compressMenuImage(dataUrl);
+  } catch {
+    return dataUrl;
+  }
+}
+
+function isPickerCancellation(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /cancel|cancelled|canceled|dismiss/i.test(message);
 }
 
 function loadLocalHiddenOrderIds(): string[] {
@@ -856,6 +871,7 @@ export default function HouseApp() {
   const [busyActionId, setBusyActionId] = useState<string | null>(null);
   const [isSavingProduct, setIsSavingProduct] = useState(false);
   const [isProcessingMenuImage, setIsProcessingMenuImage] = useState(false);
+  const menuImageInputRef = useRef<HTMLInputElement | null>(null);
 
   // Settings / QR
   const [hotelId, setHotelId] = useState('');
@@ -1722,6 +1738,46 @@ export default function HouseApp() {
     } finally {
       setIsProcessingMenuImage(false);
     }
+  }
+
+  async function handleNativeMenuImageUpload(): Promise<boolean> {
+    if (!editingProduct) return false;
+    const editorId = editingProduct.id;
+    setIsProcessingMenuImage(true);
+
+    try {
+      const photo = await Camera.getPhoto({
+        source: CameraSource.Photos,
+        resultType: CameraResultType.DataUrl,
+        quality: 82,
+        width: 1280,
+        allowEditing: false,
+      });
+      if (!photo.dataUrl) throw new Error('native-image-empty');
+      const image = await prepareMenuImageDataUrl(photo.dataUrl);
+      setEditingProduct((current) => {
+        if (!current || current.id !== editorId) return current;
+        return { ...current, image };
+      });
+      showDashboardNotice('Image selected from iPad Photos.');
+      return true;
+    } catch (err) {
+      console.warn('Native menu image picker failed', err);
+      if (isPickerCancellation(err)) return true;
+      showDashboardNotice('iPad photo picker unavailable. Opening file picker fallback.');
+      return false;
+    } finally {
+      setIsProcessingMenuImage(false);
+    }
+  }
+
+  async function openMenuImagePicker() {
+    if (isProcessingMenuImage) return;
+    if (Capacitor.isNativePlatform()) {
+      const didPickNativeImage = await handleNativeMenuImageUpload();
+      if (didPickNativeImage) return;
+    }
+    menuImageInputRef.current?.click();
   }
 
   async function saveProduct(editor: MenuEditorState) {
@@ -2818,14 +2874,22 @@ export default function HouseApp() {
                             </button>
                           </div>
                           <div className="flex items-center gap-3">
-                            <label className="relative inline-flex items-center cursor-pointer">
-                              <input
-                                type="checkbox" className="sr-only peer"
-                                checked={product.isAvailable}
-                                onChange={() => toggleProductAvailability(product)}
-                              />
-                              <div className="w-11 h-6 bg-[#e9e8e6] rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:border-[#e9e8e6] after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#775a19]" />
-                            </label>
+                            <button
+                              aria-label={`${product.isAvailable ? 'Disable' : 'Enable'} ${product.name}`}
+                              aria-checked={product.isAvailable}
+                              className={`admin-availability-switch ${product.isAvailable ? 'is-on' : 'is-off'}`}
+                              disabled={busyActionId === `product-${product.id}`}
+                              onClick={() => toggleProductAvailability(product)}
+                              role="switch"
+                              type="button"
+                            >
+                              <span className="admin-availability-switch-label">
+                                {product.isAvailable ? 'ON' : 'OFF'}
+                              </span>
+                              <span className="admin-availability-switch-track">
+                                <span className="admin-availability-switch-thumb" />
+                              </span>
+                            </button>
                             {identity.role === 'manager' ? (
                               <button
                                 aria-label={`Remove ${product.name}`}
@@ -3734,27 +3798,37 @@ export default function HouseApp() {
                   id="image"
                   label="Image URL"
                   value={editingProduct.image}
-                  placeholder="Paste image URL or upload a file"
+                  placeholder="Paste image URL or choose from device"
                   onChange={(v) => setEditingProduct((c) => c ? { ...c, image: v } : c)}
                 />
               </div>
               <div>
                 <label className="block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">Upload Image</label>
-                <label className={`flex min-h-[3.25rem] items-center justify-between gap-3 rounded-[14px] border border-dashed border-[#d1c5b4] bg-[#f4f3f1] px-4 py-3 font-['Manrope'] text-sm text-[#4e4639] transition hover:bg-[#ebe8e2] ${isProcessingMenuImage ? 'cursor-wait opacity-70' : 'cursor-pointer'}`}>
-                  <span className="truncate">{isProcessingMenuImage ? 'Processing photo...' : 'Choose food photo'}</span>
-                  <span className="material-symbols-outlined text-[20px] text-[#775a19]">upload</span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="sr-only"
-                    disabled={isProcessingMenuImage}
-                    onChange={(e) => {
-                      handleMenuImageUpload(e.target.files?.[0]);
-                      e.currentTarget.value = '';
-                    }}
-                  />
-                </label>
-                <p className="mt-2 font-['Manrope'] text-[11px] leading-5 text-[#4e4639]/70">Uploads are stored in the menu image field. Use files under 3 MB.</p>
+                <button
+                  className="admin-menu-upload-button"
+                  disabled={isProcessingMenuImage}
+                  onClick={openMenuImagePicker}
+                  type="button"
+                >
+                  <span className="admin-menu-upload-icon material-symbols-outlined">add_photo_alternate</span>
+                  <span className="admin-menu-upload-copy">
+                    <span>{isProcessingMenuImage ? 'Processing photo...' : 'Choose Food Photo'}</span>
+                    <small>{Capacitor.isNativePlatform() ? 'Uses native iPad Photos picker' : 'Works with browser file upload'}</small>
+                  </span>
+                  <span className="material-symbols-outlined text-[20px] text-[#775a19]">chevron_right</span>
+                </button>
+                <input
+                  ref={menuImageInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="sr-only"
+                  disabled={isProcessingMenuImage}
+                  onChange={(e) => {
+                    handleMenuImageUpload(e.target.files?.[0]);
+                    e.currentTarget.value = '';
+                  }}
+                />
+                <p className="mt-2 font-['Manrope'] text-[11px] leading-5 text-[#4e4639]/70">Images are compressed before save so the same asset works on web, iPad, and Android tablet.</p>
               </div>
               {editingProduct.image?.trim() ? (
                 <div className="md:col-span-2">
@@ -3780,14 +3854,24 @@ export default function HouseApp() {
                   onChange={(v) => setEditingProduct((c) => c ? { ...c, unavailableReason: v } : c)}
                 />
               </div>
-              <label className="md:col-span-2 flex items-center gap-3 bg-[#f4f3f1] px-4 py-3 rounded font-['Manrope'] text-sm text-[#1a1c1b] cursor-pointer">
-                <input
-                  checked={editingProduct.isAvailable}
-                  className="w-4 h-4 accent-[#775a19]" type="checkbox"
-                  onChange={(e) => setEditingProduct((c) => c ? { ...c, isAvailable: e.target.checked } : c)}
-                />
-                Ready for guest ordering
-              </label>
+              <button
+                aria-checked={editingProduct.isAvailable}
+                className={`admin-menu-editor-availability md:col-span-2 ${editingProduct.isAvailable ? 'is-on' : 'is-off'}`}
+                onClick={() => setEditingProduct((c) => c ? { ...c, isAvailable: !c.isAvailable } : c)}
+                role="switch"
+                type="button"
+              >
+                <span className="admin-menu-editor-availability-copy">
+                  <strong>{editingProduct.isAvailable ? 'Available for guests' : 'Hidden from guests'}</strong>
+                  <span>{editingProduct.isAvailable ? 'ON: item can be ordered now.' : 'OFF: item remains saved but cannot be ordered.'}</span>
+                </span>
+                <span className="admin-menu-editor-availability-control">
+                  <span>{editingProduct.isAvailable ? 'ON' : 'OFF'}</span>
+                  <span className="admin-menu-editor-availability-track">
+                    <span />
+                  </span>
+                </span>
+              </button>
             </div>
             <div className="admin-menu-modal-footer px-6 pb-6 flex flex-wrap gap-3">
               <button
