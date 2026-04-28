@@ -429,6 +429,67 @@ body,
   transform: translateY(-50%);
 }
 
+.admin-order-queue-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.admin-order-queue-tab {
+  min-height: 6.85rem !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "label count"
+    "helper count";
+  align-items: center;
+  justify-content: stretch !important;
+  gap: 0.25rem 0.85rem !important;
+  padding: 1.1rem 1.2rem !important;
+  border: 1px solid rgba(209, 197, 180, 0.46) !important;
+  border-radius: 1.25rem !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(250, 249, 247, 0.9)),
+    #fff !important;
+  color: var(--am-ink) !important;
+  text-align: left;
+  white-space: normal !important;
+}
+
+.admin-order-queue-tab.is-active {
+  border-color: rgba(119, 90, 25, 0.42) !important;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(197, 160, 89, 0.28), transparent 9rem),
+    linear-gradient(180deg, rgba(255, 251, 246, 0.98), rgba(255, 255, 255, 0.96)),
+    #fff !important;
+  box-shadow: var(--am-shadow-button) !important;
+}
+
+.admin-order-queue-tab-label {
+  grid-area: label;
+  font-family: "Manrope", sans-serif;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.admin-order-queue-tab strong {
+  grid-area: count;
+  font-family: "Noto Serif", serif;
+  font-size: clamp(2rem, 3.3vw, 2.8rem);
+  line-height: 1;
+  color: var(--am-primary);
+}
+
+.admin-order-queue-tab small {
+  grid-area: helper;
+  max-width: 14rem;
+  color: var(--am-muted);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
 .admin-page-orders > div:first-child,
 .admin-page-menu > div:first-child,
 .admin-page-feedback > div:first-child,
@@ -438,10 +499,36 @@ body,
   padding-bottom: 0.25rem;
 }
 
+.admin-page > div:first-child [class*="bg-[#f4f3f1]"] {
+  border: 1px solid rgba(209, 197, 180, 0.34) !important;
+  border-radius: 1.15rem !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(244, 243, 241, 0.9)),
+    #f4f3f1 !important;
+  box-shadow: var(--am-shadow-bezel) !important;
+}
+
+.admin-page-orders .space-y-6 {
+  display: grid !important;
+  gap: 1.25rem !important;
+}
+
 .admin-page-orders .space-y-6 > div,
 .admin-page-handover .space-y-4 > div,
 .admin-page-settings .space-y-6 > section {
   border-radius: var(--am-radius-card) !important;
+}
+
+.admin-page-orders .space-y-6 > div {
+  min-height: 20rem;
+}
+
+.admin-page-orders .space-y-6 > div > div:first-child {
+  padding: clamp(1.35rem, 2vw, 1.8rem) !important;
+}
+
+.admin-page-orders .space-y-6 > div > div:last-child {
+  gap: 1rem;
 }
 
 .admin-hours-row {
@@ -517,6 +604,14 @@ body,
   overflow-wrap: anywhere;
 }
 
+.admin-page-feedback article h3 {
+  line-height: 1.2 !important;
+}
+
+.admin-page-feedback article [class*="bg-[#f4f3f1]"] {
+  border: 1px solid rgba(209, 197, 180, 0.28);
+}
+
 .admin-page-feedback article button {
   min-width: 7.5rem;
 }
@@ -587,8 +682,8 @@ body,
 
 .admin-confirm-backdrop {
   background:
-    radial-gradient(circle at 50% 24%, rgba(255, 255, 255, 0.2), transparent 20rem),
-    rgba(26, 28, 27, 0.42) !important;
+    radial-gradient(circle at 50% 24%, rgba(255, 255, 255, 0.32), transparent 22rem),
+    rgba(26, 28, 27, 0.18) !important;
 }
 
 .admin-confirm-modal {
@@ -713,13 +808,25 @@ body,
 }
 
 .admin-modal-backdrop {
-  padding: clamp(1rem, 3vw, 2rem) !important;
+  display: grid !important;
+  place-items: center !important;
   align-items: center !important;
+  justify-items: center !important;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-y: auto;
+  padding: clamp(1rem, 3vw, 2rem) !important;
   background:
-    radial-gradient(circle at 50% 18%, rgba(255, 255, 255, 0.22), transparent 22rem),
-    rgba(26, 28, 27, 0.38) !important;
-  -webkit-backdrop-filter: blur(14px) saturate(1.05) !important;
-  backdrop-filter: blur(14px) saturate(1.05) !important;
+    radial-gradient(circle at 50% 18%, rgba(255, 255, 255, 0.34), transparent 24rem),
+    rgba(26, 28, 27, 0.18) !important;
+  -webkit-backdrop-filter: blur(8px) saturate(1.04) !important;
+  backdrop-filter: blur(8px) saturate(1.04) !important;
+}
+
+.admin-modal-backdrop > * {
+  align-self: center !important;
+  justify-self: center !important;
+  margin: auto !important;
 }
 
 .admin-menu-modal {
@@ -1376,6 +1483,14 @@ body,
   .admin-notification-dismiss {
     width: 100%;
     margin-right: 0;
+  }
+
+  .admin-order-queue-tabs {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-order-queue-tab {
+    min-height: 5.8rem !important;
   }
 
   .admin-menu-modal-footer {

@@ -28,6 +28,19 @@ import {
 import { useDynamicTitle } from '../../hooks/useDynamicTitle';
 import { useWakeLock } from '../../hooks/useWakeLock';
 import { getNewIncomingOrderIds } from '../../admin/notifications';
+import {
+  ORDER_QUEUE_VIEWS,
+  TERMINAL_ORDER_STATUSES,
+  filterOrdersByQueue,
+  getOrderQueueSummary,
+  type OrderQueueView,
+} from '../../admin/orderQueues';
+import {
+  buildFeedbackHeadline,
+  buildFeedbackQuote,
+  getAdminGuestDisplayName,
+  getOrderClockLabel,
+} from '../../admin/feedbackPresentation';
 import { buildRevenueExport } from '../../admin/revenue';
 import { resolveAdminSession, type AdminRole } from '../../admin/session';
 
@@ -179,7 +192,7 @@ interface FirestoreRestDocument {
   name: string;
 }
 
-const TERMINAL_STATUSES = new Set(['delivered', 'completed', 'cancelled']);
+const TERMINAL_STATUSES = TERMINAL_ORDER_STATUSES;
 const SLA_THRESHOLD_MS = 20 * 60 * 1000; // 20 minutes
 const CLOUD_WRITE_TIMEOUT_MS = 8000;
 const LOCAL_SHIFT_NOTES_KEY = 'admindashboardcomponent_shift_notes';
@@ -653,7 +666,7 @@ function normalizeOrder(docId: string, data: Record<string, unknown>): Dashboard
 
   return {
     id: docId,
-    roomNumber: typeof data.roomNumber === 'string' ? data.roomNumber : 'Unknown',
+    roomNumber: typeof data.roomNumber === 'string' ? data.roomNumber : 'Unassigned',
     lastName: typeof data.lastName === 'string' ? data.lastName : '',
     phoneNumber: typeof data.phoneNumber === 'string' ? data.phoneNumber : '',
     status: typeof data.status === 'string' ? data.status : 'incoming',
@@ -661,7 +674,7 @@ function normalizeOrder(docId: string, data: Record<string, unknown>): Dashboard
       const row = (item && typeof item === 'object') ? item as Record<string, unknown> : {};
       return {
         id: typeof row.id === 'string' ? row.id : `${docId}-${index}`,
-        name: typeof row.name === 'string' ? row.name : 'Unknown item',
+        name: typeof row.name === 'string' ? row.name : 'Menu item unavailable',
         qty: typeof row.qty === 'number' ? row.qty : typeof row.quantity === 'number' ? row.quantity : 1,
         price: typeof row.price === 'number' ? row.price : 0,
         note: typeof row.note === 'string' ? row.note : '',
@@ -866,6 +879,7 @@ export default function HouseApp() {
   const [feedbackFilter, setFeedbackFilter] = useState<'all' | '5' | '4' | 'week'>('all');
   const [revenueRange, setRevenueRange] = useState<'daily' | 'weekly' | 'monthly'>('daily');
   const [ordersAttentionOnly, setOrdersAttentionOnly] = useState(false);
+  const [orderQueueView, setOrderQueueView] = useState<OrderQueueView>('active');
   const [isOrderIntakePaused, setIsOrderIntakePaused] = useState(false);
   const [hiddenOrderIds, setHiddenOrderIds] = useState<string[]>(() => loadLocalHiddenOrderIds());
   const [busyActionId, setBusyActionId] = useState<string | null>(null);
@@ -913,8 +927,16 @@ export default function HouseApp() {
     [orders],
   );
   const activeOrders = useMemo(
-    () => orders.filter((o) => !hiddenOrderIds.includes(o.id) && !TERMINAL_STATUSES.has(o.status)),
+    () => filterOrdersByQueue(orders, 'active', hiddenOrderIds),
     [hiddenOrderIds, orders],
+  );
+  const orderQueueSummary = useMemo(
+    () => getOrderQueueSummary(orders, hiddenOrderIds),
+    [hiddenOrderIds, orders],
+  );
+  const selectedQueueOrders = useMemo(
+    () => filterOrdersByQueue(orders, orderQueueView, hiddenOrderIds),
+    [hiddenOrderIds, orderQueueView, orders],
   );
   const slaBreachedCount = useMemo(
     () => orders.filter(isOrderSlaBreached).length,
@@ -1104,8 +1126,12 @@ export default function HouseApp() {
   }, [activeSearchQuery, activeTab, revenueDistribution]);
   const visibleOrders = useMemo(() => {
     const queryText = activeTab === 'orders' ? activeSearchQuery : '';
-    return activeOrders.filter((order) => {
-      if (ordersAttentionOnly && !(order.status === 'incoming' || !order.isRead || isOrderSlaBreached(order))) return false;
+    return selectedQueueOrders.filter((order) => {
+      if (
+        orderQueueView === 'active'
+        && ordersAttentionOnly
+        && !(order.status === 'incoming' || !order.isRead || isOrderSlaBreached(order))
+      ) return false;
       if (!queryText) return true;
       return [
         order.roomNumber,
@@ -1114,7 +1140,7 @@ export default function HouseApp() {
         ...order.items.map((item) => item.name),
       ].some((value) => value.toLowerCase().includes(queryText));
     });
-  }, [activeOrders, activeSearchQuery, activeTab, ordersAttentionOnly]);
+  }, [activeSearchQuery, activeTab, orderQueueView, ordersAttentionOnly, selectedQueueOrders]);
   const visibleStaffAccounts = useMemo(() => {
     const queryText = (activeTab === 'settings' ? shellSearch : '').trim().toLowerCase();
     if (!queryText) return staffAccounts;
@@ -1444,6 +1470,7 @@ export default function HouseApp() {
   function handleNotificationCenter() {
     if (unreadIncomingOrders.length > 0) {
       openAdminTab('orders');
+      setOrderQueueView('active');
       setOrdersAttentionOnly(true);
       showDashboardNotice(`${unreadIncomingOrders.length} unread incoming order${unreadIncomingOrders.length === 1 ? '' : 's'} shown in the priority queue.`);
       return;
@@ -1454,16 +1481,16 @@ export default function HouseApp() {
   async function updateOrderStatusDocument(orderId: string, status: string): Promise<void> {
     const updatedAt = new Date();
     try {
-      await patchFirestoreDocument('orders', orderId, { status, isRead: true, updatedAt });
+      await withTimeout(
+        updateDoc(doc(db, 'orders', orderId), { status, isRead: true, updatedAt: serverTimestamp() }),
+        'order-status-timeout',
+      );
       return;
-    } catch (restError) {
-      console.warn('REST order status update failed, trying Firebase SDK.', restError);
+    } catch (sdkError) {
+      console.warn('Firebase SDK order status update failed, trying REST fallback.', sdkError);
     }
 
-    await withTimeout(
-      updateDoc(doc(db, 'orders', orderId), { status, isRead: true, updatedAt: serverTimestamp() }),
-      'order-status-timeout',
-    );
+    await patchFirestoreDocument('orders', orderId, { status, isRead: true, updatedAt });
   }
 
   async function createShiftNoteDocument(note: Omit<ShiftNote, 'id' | 'createdAt'>): Promise<ShiftNote> {
@@ -1493,6 +1520,7 @@ export default function HouseApp() {
   }
 
   function toggleOrderPriorityFilter() {
+    setOrderQueueView('active');
     setOrdersAttentionOnly((current) => {
       const next = !current;
       showDashboardNotice(next ? 'Showing incoming, unread, and delayed orders only.' : 'Showing all active orders.');
@@ -2669,12 +2697,37 @@ export default function HouseApp() {
                   </div>
                 </div>
 
+                <div className="admin-order-queue-tabs mb-8" role="tablist" aria-label="Live order queues">
+                  {ORDER_QUEUE_VIEWS.map((view) => {
+                    const isSelected = orderQueueView === view.id;
+                    return (
+                      <button
+                        key={view.id}
+                        type="button"
+                        role="tab"
+                        aria-selected={isSelected}
+                        className={`admin-order-queue-tab ${isSelected ? 'is-active' : ''}`}
+                        onClick={() => {
+                          setOrderQueueView(view.id);
+                          if (view.id !== 'active') setOrdersAttentionOnly(false);
+                        }}
+                      >
+                        <span className="admin-order-queue-tab-label">{view.label}</span>
+                        <strong>{orderQueueSummary[view.id]}</strong>
+                        <small>{view.helper}</small>
+                      </button>
+                    );
+                  })}
+                </div>
+
                 {!dataLoaded ? (
                   <LoadingSkeleton lines={4} />
                 ) : visibleOrders.length === 0 ? (
                   <div className={`${ELEVATED_PANEL_CLASS} p-12 text-center`}>
                     <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">restaurant</span>
-                    <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No active orders match the current queue.</p>
+                    <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">
+                      No {orderQueueView === 'active' ? 'active' : orderQueueView} orders match this queue.
+                    </p>
                   </div>
                 ) : (
                   <div className="space-y-6">
@@ -2696,12 +2749,12 @@ export default function HouseApp() {
                                 {sla ? 'Delayed' : formatStatusLabel(order.status)}
                               </span>
                               <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Suite {order.roomNumber}</h3>
-                              <p className="font-['Manrope'] text-sm text-[#5f5e5e] mt-1">{order.lastName || 'Guest'}</p>
+                              <p className="font-['Manrope'] text-sm text-[#5f5e5e] mt-1">{getAdminGuestDisplayName(order.lastName)}</p>
                             </div>
                             <div className="mt-10">
                               <p className="font-['Manrope'] text-[10px] text-[#5f5e5e] tracking-widest uppercase">Ordered</p>
                               <p className="font-['Manrope'] font-medium text-[#1a1c1b] text-sm mt-1">
-                                {order.createdAt ? order.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Unknown'}
+                                {getOrderClockLabel(order.createdAt)}
                                 {' '}
                                 ({formatRelativeTime(order.createdAt)})
                               </p>
@@ -2925,8 +2978,8 @@ export default function HouseApp() {
                 <div className="flex flex-col md:flex-row md:justify-between md:items-end mb-10 gap-6">
                   <div className="max-w-2xl">
                     <span className="uppercase tracking-[0.1em] text-xs font-bold text-[#775a19] mb-3 block font-['Manrope']">Guest Relations</span>
-                    <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight mb-3">Curated Feedback</h2>
-                    <p className="font-['Manrope'] text-[#4e4639] text-base font-light leading-relaxed">Review recent dining experiences to maintain the exacting standards of our culinary service.</p>
+                    <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight mb-3">Guest Feedback</h2>
+                    <p className="font-['Manrope'] text-[#4e4639] text-base font-light leading-relaxed">Review ratings, written comments, and follow-up requests from recent dining orders.</p>
                   </div>
                   <div className="flex gap-4 shrink-0">
                     <div className="bg-[#f4f3f1] p-5 rounded min-w-[140px]">
@@ -2999,7 +3052,7 @@ export default function HouseApp() {
                                 ))}
                               </div>
                               <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">
-                                {feedbackHeroOrder.feedbackSummary || 'Guest rating submitted'}
+                                {buildFeedbackHeadline(feedbackHeroOrder)}
                               </h3>
                             </div>
                             <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639] bg-[#f4f3f1] px-3 py-1 rounded">
@@ -3007,15 +3060,15 @@ export default function HouseApp() {
                             </span>
                           </div>
                           <p className="font-['Manrope'] text-[#4e4639] leading-relaxed mb-8 mt-0">
-                            "{feedbackHeroOrder.feedbackText || feedbackHeroOrder.feedbackSummary || 'Guest submitted a rating without written comments.'}"
+                            "{buildFeedbackQuote(feedbackHeroOrder)}"
                           </p>
                           <div className="flex justify-between items-end border-t border-[#e3e2e0]/50 pt-6 mt-auto">
                             <div className="flex items-center gap-4">
                               <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#1a1c1b] text-white">
-                                {feedbackHeroOrder.lastName?.slice(0, 1) || 'G'}
+                                {getAdminGuestDisplayName(feedbackHeroOrder.lastName).slice(0, 1)}
                               </div>
                               <div>
-                                <p className="font-['Manrope'] text-base text-[#1a1c1b]">{feedbackHeroOrder.lastName || 'Guest'}</p>
+                                <p className="font-['Manrope'] text-base text-[#1a1c1b]">{getAdminGuestDisplayName(feedbackHeroOrder.lastName)}</p>
                                 <p className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatFeedbackTime(feedbackHeroOrder.createdAt)}</p>
                               </div>
                             </div>
@@ -3053,10 +3106,10 @@ export default function HouseApp() {
                             <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]">Suite {feedbackSideOrder.roomNumber}</span>
                           </div>
                           <h3 className="font-['Noto_Serif'] text-lg text-[#1a1c1b] mb-3">
-                            {feedbackSideOrder.feedbackSummary || 'Guest rating submitted'}
+                            {buildFeedbackHeadline(feedbackSideOrder)}
                           </h3>
                           <p className="font-['Manrope'] text-[#4e4639] text-sm leading-relaxed mb-8 flex-grow">
-                            "{feedbackSideOrder.feedbackText || feedbackSideOrder.feedbackSummary || 'No written comment provided.'}"
+                            "{buildFeedbackQuote(feedbackSideOrder)}"
                           </p>
                           <div className="flex justify-between items-end border-t border-[#e3e2e0]/50 pt-4">
                             <p className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatFeedbackTime(feedbackSideOrder.createdAt)}</p>
@@ -3097,10 +3150,10 @@ export default function HouseApp() {
                               <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]">Suite {feedbackIssueOrder.roomNumber}</span>
                             </div>
                             <h3 className="font-['Noto_Serif'] text-lg text-[#1a1c1b] mb-3">
-                              {feedbackIssueOrder.feedbackSummary || 'Review requires follow-up'}
+                              {buildFeedbackHeadline(feedbackIssueOrder)}
                             </h3>
                             <p className="font-['Manrope'] text-[#4e4639] text-sm leading-relaxed mb-8 flex-grow">
-                              "{feedbackIssueOrder.feedbackText || 'Action required on this guest experience.'}"
+                              "{buildFeedbackQuote(feedbackIssueOrder)}"
                             </p>
                             <div className="flex justify-between items-end border-t border-[#ba1a1a]/10 pt-4">
                               <div>
@@ -3142,14 +3195,14 @@ export default function HouseApp() {
                               </div>
                               <div className="mb-6 flex items-center justify-between gap-4">
                                 <h3 className="font-['Noto_Serif'] text-lg text-[#1a1c1b]">
-                                  {feedbackStoryOrder.feedbackSummary || 'Dining experience recap'}
+                                  {buildFeedbackHeadline(feedbackStoryOrder)}
                                 </h3>
                                 <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639] bg-[#f4f3f1] px-3 py-1 rounded">
                                   Suite {feedbackStoryOrder.roomNumber}
                                 </span>
                               </div>
                               <p className="font-['Manrope'] text-[#4e4639] text-sm leading-relaxed mb-6">
-                                "{feedbackStoryOrder.feedbackText || feedbackStoryOrder.feedbackSummary || 'Guest shared a memorable meal recap.'}"
+                                "{buildFeedbackQuote(feedbackStoryOrder)}"
                               </p>
                             </div>
                           </div>
@@ -3765,7 +3818,7 @@ export default function HouseApp() {
 
       {/* ── Menu editor modal ── */}
       {editingProduct ? (
-        <div className="admin-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm" onClick={() => setEditingProduct(null)}>
+        <div className="admin-modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setEditingProduct(null)}>
           <div className="admin-menu-modal w-full max-w-2xl bg-white rounded-lg shadow-[0_20px_60px_rgba(26,28,27,0.2)] max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="admin-menu-modal-header p-6 border-b border-[#f4f3f1] flex items-start justify-between gap-4">
               <div>
@@ -3892,7 +3945,7 @@ export default function HouseApp() {
         </div>
       ) : null}
       {staffEditor ? (
-        <div className="admin-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm" onClick={() => setStaffEditor(null)}>
+        <div className="admin-modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setStaffEditor(null)}>
           <div className="admin-staff-modal w-full max-w-2xl rounded-[22px] bg-white shadow-[0_20px_60px_rgba(26,28,27,0.2)]" onClick={(e) => e.stopPropagation()}>
             <div className="admin-menu-modal-header flex items-start justify-between gap-4 border-b border-[#f4f3f1] p-6">
               <div>
@@ -3975,7 +4028,7 @@ export default function HouseApp() {
       ) : null}
       {confirmDialog ? (
         <div
-          className="admin-modal-backdrop admin-confirm-backdrop fixed inset-0 z-[60] flex items-center justify-center bg-[#1a1c1b]/40 p-4 backdrop-blur-[6px]"
+          className="admin-modal-backdrop admin-confirm-backdrop fixed inset-0 z-[60] flex items-center justify-center p-4"
           onClick={() => { if (!isConfirmingDialog) setConfirmDialog(null); }}
         >
           <div className="admin-confirm-modal w-full max-w-sm rounded-2xl bg-white shadow-[0_20px_60px_rgba(26,28,27,0.24)] p-7" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="admin-confirm-title">
