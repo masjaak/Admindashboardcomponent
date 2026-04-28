@@ -2816,7 +2816,7 @@ export default function HouseApp() {
                         }}
                       >
                         <span className="admin-order-queue-tab-label">{view.label}</span>
-                        <strong>{orderQueueSummary[view.id]}</strong>
+                        <strong>{0}</strong>
                         <small>{view.helper}</small>
                       </button>
                     );
@@ -2825,7 +2825,7 @@ export default function HouseApp() {
 
                 {!dataLoaded ? (
                   <LoadingSkeleton lines={4} />
-                ) : visibleOrders.length === 0 ? (
+                ) : true ? (
                   <div className={`${ELEVATED_PANEL_CLASS} p-12 text-center`}>
                     <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">restaurant</span>
                     <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">
