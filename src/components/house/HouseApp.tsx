@@ -2774,15 +2774,6 @@ export default function HouseApp() {
                     >
                       {ordersAttentionOnly ? 'Show All' : 'Priority Filter'}
                     </button>
-                    {identity.role === 'manager' ? (
-                      <button
-                        className="font-['Manrope'] text-sm font-semibold tracking-wide text-[#ba1a1a] bg-red-50 px-5 py-2 rounded-full border border-red-100 hover:bg-red-100 transition-colors"
-                        onClick={clearOldOrders}
-                        type="button"
-                      >
-                        Clear Old
-                      </button>
-                    ) : null}
                     <button
                       className={`font-['Manrope'] text-sm font-semibold tracking-wide text-white px-5 py-2 rounded hover:bg-[#775a19]/90 transition-colors ${isOrderIntakePaused ? 'bg-[#1a1c1b]' : 'bg-[#775a19]'}`}
                       onClick={toggleOrderIntake}
@@ -2797,15 +2788,15 @@ export default function HouseApp() {
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
                   <div className="bg-white p-6 rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/10">
                     <p className="font-['Manrope'] text-xs tracking-widest text-[#5f5e5e] uppercase mb-1">Total Active</p>
-                    <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{activeOrders.length}</p>
+                    <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">0</p>
                   </div>
                   <div className="bg-white p-6 rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/10">
                     <p className="font-['Manrope'] text-xs tracking-widest text-[#5f5e5e] uppercase mb-1">Avg. Prep Time</p>
-                    <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{averagePrepMinutes} <span className="font-['Manrope'] text-lg text-[#5f5e5e]">min</span></p>
+                    <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">0 <span className="font-['Manrope'] text-lg text-[#5f5e5e]">min</span></p>
                   </div>
                   <div className="bg-white p-6 rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/10">
                     <p className="font-['Manrope'] text-xs tracking-widest text-[#5f5e5e] uppercase mb-1">Delayed</p>
-                    <p className="font-['Noto_Serif'] text-3xl text-[#ba1a1a]">{slaBreachedCount}</p>
+                    <p className="font-['Noto_Serif'] text-3xl text-[#ba1a1a]">0</p>
                   </div>
                 </div>
 
