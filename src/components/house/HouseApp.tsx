@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   addDoc,
   collection,
+  deleteField,
   deleteDoc,
   doc,
   getDoc,
@@ -13,9 +14,11 @@ import {
   setDoc,
   updateDoc,
 } from 'firebase/firestore';
-import { User, onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { auth, db } from '../../lib/firebase';
-import { createGuestQrToken, revokeGuestSessionAsAdmin } from '../../lib/adminAccess';
+import { User, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { Capacitor } from '@capacitor/core';
+import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
+import { auth, db, firebaseConfig } from '../../lib/firebase';
+import { createGuestQrToken } from '../../lib/adminAccess';
 import {
   createAdminUser,
   deleteAdminUser,
@@ -25,6 +28,19 @@ import {
 import { useDynamicTitle } from '../../hooks/useDynamicTitle';
 import { useWakeLock } from '../../hooks/useWakeLock';
 import { getNewIncomingOrderIds } from '../../admin/notifications';
+import {
+  ORDER_QUEUE_VIEWS,
+  TERMINAL_ORDER_STATUSES,
+  filterOrdersByQueue,
+  getOrderQueueSummary,
+  type OrderQueueView,
+} from '../../admin/orderQueues';
+import {
+  buildFeedbackHeadline,
+  buildFeedbackQuote,
+  getAdminGuestDisplayName,
+  getOrderClockLabel,
+} from '../../admin/feedbackPresentation';
 import { buildRevenueExport } from '../../admin/revenue';
 import { resolveAdminSession, type AdminRole } from '../../admin/session';
 
@@ -139,6 +155,17 @@ interface RevenueTrendPoint {
   value: number;
 }
 
+interface ConfirmDialogState {
+  title: string;
+  message: string;
+  detail?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  tone?: 'danger' | 'warning';
+  icon?: string;
+  onConfirm: () => void | Promise<void>;
+}
+
 interface OperatingHour {
   day: OperatingDayName;
   enabled: boolean;
@@ -153,7 +180,19 @@ interface AlertPreference {
   enabled: boolean;
 }
 
-const TERMINAL_STATUSES = new Set(['delivered', 'completed', 'cancelled']);
+type FirestoreRestValue =
+  | { stringValue?: string }
+  | { integerValue?: string }
+  | { doubleValue?: number }
+  | { booleanValue?: boolean }
+  | { timestampValue?: string }
+  | { nullValue?: null };
+
+interface FirestoreRestDocument {
+  name: string;
+}
+
+const TERMINAL_STATUSES = TERMINAL_ORDER_STATUSES;
 const SLA_THRESHOLD_MS = 20 * 60 * 1000; // 20 minutes
 
 // State-machine compliance (agent_rule.txt): explicit states + terminal set
@@ -170,6 +209,10 @@ const ORDER_STATES = {
 function isTerminalStatus(status: string): boolean {
   return status === ORDER_STATES.DELIVERED || status === ORDER_STATES.COMPLETED || status === ORDER_STATES.CANCELLED;
 }
+const CLOUD_WRITE_TIMEOUT_MS = 8000;
+const LOCAL_SHIFT_NOTES_KEY = 'admindashboardcomponent_shift_notes';
+const LOCAL_PRODUCTS_KEY = 'admindashboardcomponent_menu_products';
+const LOCAL_HIDDEN_ORDER_IDS_KEY = 'admindashboardcomponent_hidden_order_ids';
 
 const STATUS_COLORS: Record<string, string> = {
   incoming: 'bg-blue-50 text-blue-800',
@@ -217,8 +260,269 @@ const TAB_SEARCH_PLACEHOLDERS: Record<AdminTab, string> = {
 const ELEVATED_PANEL_CLASS = 'rounded-lg bg-white shadow-[0_10px_30px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/20';
 const TONAL_PANEL_CLASS = 'rounded-lg bg-[#f4f3f1] border border-[#d1c5b4]/20';
 
+function getFirestoreRestBaseUrl(): string {
+  return `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/(default)/documents`;
+}
+
+function getFirestoreDocumentId(documentName: string): string {
+  return documentName.split('/').pop() || '';
+}
+
+function writeFirestoreRestValue(value: unknown): FirestoreRestValue {
+  if (value instanceof Date) return { timestampValue: value.toISOString() };
+  if (value === null || typeof value === 'undefined') return { nullValue: null };
+  if (typeof value === 'string') return { stringValue: value };
+  if (typeof value === 'boolean') return { booleanValue: value };
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? { integerValue: String(value) } : { doubleValue: value };
+  }
+  return { stringValue: String(value) };
+}
+
+async function fetchJsonWithTimeout<T>(url: string, init?: RequestInit): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), CLOUD_WRITE_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    if (!response.ok) throw new Error(`rest-${response.status}`);
+    return await response.json() as T;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('timeout');
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  const token = await auth.currentUser?.getIdToken().catch(() => '');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function patchFirestoreDocument(
+  collectionName: string,
+  docId: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const updateMask = Object.keys(payload)
+    .map((field) => `updateMask.fieldPaths=${encodeURIComponent(field)}`)
+    .join('&');
+  await fetchJsonWithTimeout<FirestoreRestDocument>(
+    `${getFirestoreRestBaseUrl()}/${collectionName}/${encodeURIComponent(docId)}?key=${firebaseConfig.apiKey}&${updateMask}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...await getAuthHeaders() },
+      body: JSON.stringify({
+        fields: Object.fromEntries(Object.entries(payload).map(([key, value]) => [key, writeFirestoreRestValue(value)])),
+      }),
+    },
+  );
+}
+
+async function createFirestoreDocument(collectionName: string, payload: Record<string, unknown>): Promise<string> {
+  const document = await fetchJsonWithTimeout<FirestoreRestDocument>(
+    `${getFirestoreRestBaseUrl()}/${collectionName}?key=${firebaseConfig.apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...await getAuthHeaders() },
+      body: JSON.stringify({
+        fields: Object.fromEntries(Object.entries(payload).map(([key, value]) => [key, writeFirestoreRestValue(value)])),
+      }),
+    },
+  );
+  return getFirestoreDocumentId(document.name);
+}
+
+function withTimeout<T>(promise: Promise<T>, message = 'timeout'): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      window.setTimeout(() => reject(new Error(message)), CLOUD_WRITE_TIMEOUT_MS);
+    }),
+  ]);
+}
+
+function loadLocalProducts(): MenuProduct[] {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_PRODUCTS_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw) as MenuProduct[];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalProducts(products: MenuProduct[]): void {
+  const prioritizedProducts = products.slice(0, 200);
+  const attempts = [prioritizedProducts, prioritizedProducts.slice(0, 75), prioritizedProducts.slice(0, 25), prioritizedProducts.slice(0, 10), prioritizedProducts.slice(0, 5), prioritizedProducts.slice(0, 1)];
+
+  for (const attempt of attempts) {
+    try {
+      window.localStorage.setItem(LOCAL_PRODUCTS_KEY, JSON.stringify(attempt));
+      return;
+    } catch {
+      // Keep trying smaller snapshots so the newest menu edit still survives quota pressure.
+    }
+  }
+}
+
+function upsertLocalProduct(product: MenuProduct): void {
+  const current = loadLocalProducts();
+  const next = [product, ...current.filter((item) => item.id !== product.id)];
+  saveLocalProducts(next);
+}
+
+function removeLocalProduct(productId: string): void {
+  saveLocalProducts(loadLocalProducts().filter((item) => item.id !== productId));
+}
+
+function mergeProducts(remoteProducts: MenuProduct[]): MenuProduct[] {
+  const byId = new Map<string, MenuProduct>();
+  for (const product of [...remoteProducts, ...loadLocalProducts()]) {
+    byId.set(product.id, product);
+  }
+  return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      result ? resolve(result) : reject(new Error('empty-image'));
+    };
+    reader.onerror = () => reject(new Error('image-read-failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function compressMenuImage(dataUrl: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      const targets = [
+        { maxSize: 1280, quality: 0.82 },
+        { maxSize: 960, quality: 0.76 },
+        { maxSize: 720, quality: 0.7 },
+      ];
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      if (!context) {
+        reject(new Error('canvas-unavailable'));
+        return;
+      }
+
+      let output = dataUrl;
+      for (const target of targets) {
+        const scale = Math.min(1, target.maxSize / Math.max(image.width, image.height));
+        const width = Math.max(1, Math.round(image.width * scale));
+        const height = Math.max(1, Math.round(image.height * scale));
+        canvas.width = width;
+        canvas.height = height;
+        context.clearRect(0, 0, width, height);
+        context.drawImage(image, 0, 0, width, height);
+        output = canvas.toDataURL('image/jpeg', target.quality);
+        if (output.length < 850_000) break;
+      }
+
+      resolve(output);
+    };
+    image.onerror = () => reject(new Error('image-load-failed'));
+    image.src = dataUrl;
+  });
+}
+
+async function prepareMenuImage(file: File): Promise<string> {
+  const dataUrl = await readFileAsDataUrl(file);
+  if (file.type === 'image/svg+xml') return dataUrl;
+  try {
+    return await compressMenuImage(dataUrl);
+  } catch {
+    return dataUrl;
+  }
+}
+
+async function prepareMenuImageDataUrl(dataUrl: string): Promise<string> {
+  try {
+    return await compressMenuImage(dataUrl);
+  } catch {
+    return dataUrl;
+  }
+}
+
+function isPickerCancellation(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /cancel|cancelled|canceled|dismiss/i.test(message);
+}
+
+function loadLocalHiddenOrderIds(): string[] {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_HIDDEN_ORDER_IDS_KEY);
+    return raw ? JSON.parse(raw) as string[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalHiddenOrderIds(orderIds: string[]): void {
+  window.localStorage.setItem(LOCAL_HIDDEN_ORDER_IDS_KEY, JSON.stringify(Array.from(new Set(orderIds)).slice(0, 300)));
+}
+
+function loadLocalShiftNotes(): ShiftNote[] {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_SHIFT_NOTES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as Array<Omit<ShiftNote, 'createdAt'> & { createdAt: string | null }>;
+    return parsed.map((note) => ({
+      ...note,
+      createdAt: note.createdAt ? new Date(note.createdAt) : null,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function persistLocalShiftNote(note: ShiftNote): void {
+  const next = [note, ...loadLocalShiftNotes()].slice(0, 80);
+  window.localStorage.setItem(LOCAL_SHIFT_NOTES_KEY, JSON.stringify(next.map((item) => ({
+    ...item,
+    createdAt: item.createdAt ? item.createdAt.toISOString() : null,
+  }))));
+}
+
+function mergeShiftNotes(remoteNotes: ShiftNote[]): ShiftNote[] {
+  const byId = new Map<string, ShiftNote>();
+  for (const note of [...loadLocalShiftNotes(), ...remoteNotes]) {
+    byId.set(note.id, note);
+  }
+  return Array.from(byId.values()).sort((a, b) => (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0));
+}
+
 function normalizeRole(role: unknown): AdminRole {
   return role === 'staff' ? 'staff' : 'manager';
+}
+
+function getAdminLoginErrorMessage(err: unknown): string {
+  const code = (err as { code?: string })?.code || '';
+  const message = (err as { message?: string })?.message || '';
+
+  if (code.includes('invalid-api-key') || message.toLowerCase().includes('api key')) {
+    return 'Firebase API key admin tidak valid. Refresh build app setelah config diperbaiki.';
+  }
+  if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') {
+    return 'Email atau password admin tidak cocok.';
+  }
+  if (code === 'auth/too-many-requests') {
+    return 'Login sementara dibatasi karena terlalu banyak percobaan. Tunggu sebentar lalu coba lagi.';
+  }
+  if (code === 'auth/network-request-failed') {
+    return 'Login gagal karena koneksi ke Firebase terputus. Cek internet simulator.';
+  }
+
+  return `Login gagal${code ? ` (${code})` : ''}. Pastikan akun manager atau staff aktif di Firebase Auth.`;
 }
 
 function formatIdr(value: number): string {
@@ -327,9 +631,8 @@ function getRevenuePeriodBounds(anchor: Date, range: 'daily' | 'weekly' | 'month
 function getOrderNextAction(status: string): { label: string; nextStatus: string } | null {
   switch (status) {
     case 'incoming':
-      return { label: 'Accept Order', nextStatus: 'confirmed' };
     case 'confirmed':
-      return { label: 'Send to Kitchen', nextStatus: 'kitchen' };
+      return { label: 'Send to Kitchen', nextStatus: 'preparing' };
     case 'kitchen':
       return { label: 'Start Prep', nextStatus: 'preparing' };
     case 'preparing':
@@ -350,6 +653,10 @@ function getOrderNextAction(status: string): { label: string; nextStatus: string
 function isOrderSlaBreached(order: DashboardOrder): boolean {
   if (!order.createdAt || isTerminalStatus(order.status)) return false;
   return Date.now() - order.createdAt.getTime() > SLA_THRESHOLD_MS;
+}
+
+function canRevokeOrderAccess(order: DashboardOrder): boolean {
+  return !isTerminalStatus(order.status) && Boolean(order.guestUid || order.accessTokenId);
 }
 
 function normalizeProduct(docId: string, data: Record<string, unknown>): MenuProduct {
@@ -374,7 +681,7 @@ function normalizeOrder(docId: string, data: Record<string, unknown>): Dashboard
 
   return {
     id: docId,
-    roomNumber: typeof data.roomNumber === 'string' ? data.roomNumber : 'Unknown',
+    roomNumber: typeof data.roomNumber === 'string' ? data.roomNumber : 'Unassigned',
     lastName: typeof data.lastName === 'string' ? data.lastName : '',
     phoneNumber: typeof data.phoneNumber === 'string' ? data.phoneNumber : '',
     status: typeof data.status === 'string' ? data.status : 'incoming',
@@ -382,7 +689,7 @@ function normalizeOrder(docId: string, data: Record<string, unknown>): Dashboard
       const row = (item && typeof item === 'object') ? item as Record<string, unknown> : {};
       return {
         id: typeof row.id === 'string' ? row.id : `${docId}-${index}`,
-        name: typeof row.name === 'string' ? row.name : 'Unknown item',
+        name: typeof row.name === 'string' ? row.name : 'Menu item unavailable',
         qty: typeof row.qty === 'number' ? row.qty : typeof row.quantity === 'number' ? row.quantity : 1,
         price: typeof row.price === 'number' ? row.price : 0,
         note: typeof row.note === 'string' ? row.note : '',
@@ -510,12 +817,13 @@ function downloadExcelFile(filename: string, mimeType: string, content: string):
 }
 
 function LoadingSkeleton({ lines = 3 }: { lines?: number }) {
+  const widths = ['58%', '76%', '64%', '82%', '70%', '60%'];
   return (
     <div className={`${ELEVATED_PANEL_CLASS} p-8 space-y-4 animate-pulse`}>
       {Array.from({ length: lines }, (_, i) => (
         <div key={i} className="flex gap-4 items-center">
           <div className="h-4 bg-[#e9e8e6] rounded w-1/4" />
-          <div className="h-4 bg-[#e9e8e6] rounded" style={{ width: `${50 + Math.random() * 30}%` }} />
+          <div className="h-4 bg-[#e9e8e6] rounded" style={{ width: widths[i % widths.length] }} />
         </div>
       ))}
     </div>
@@ -587,9 +895,13 @@ export default function HouseApp() {
   const [revenueRange, setRevenueRange] = useState<'daily' | 'weekly' | 'monthly'>('daily');
   const [ordersAttentionOnly, setOrdersAttentionOnly] = useState(false);
   const [showAllOrders, setShowAllOrders] = useState(false);
+  const [orderQueueView, setOrderQueueView] = useState<OrderQueueView>('active');
   const [isOrderIntakePaused, setIsOrderIntakePaused] = useState(false);
+  const [hiddenOrderIds, setHiddenOrderIds] = useState<string[]>(() => loadLocalHiddenOrderIds());
   const [busyActionId, setBusyActionId] = useState<string | null>(null);
   const [isSavingProduct, setIsSavingProduct] = useState(false);
+  const [isProcessingMenuImage, setIsProcessingMenuImage] = useState(false);
+  const menuImageInputRef = useRef<HTMLInputElement | null>(null);
 
   // Settings / QR
   const [hotelId, setHotelId] = useState('');
@@ -609,7 +921,8 @@ export default function HouseApp() {
   const [staffEditor, setStaffEditor] = useState<StaffEditorState | null>(null);
   const [isSavingStaff, setIsSavingStaff] = useState(false);
   const [passwordResetUid, setPasswordResetUid] = useState<string | null>(null);
-  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  const [isConfirmingDialog, setIsConfirmingDialog] = useState(false);
 
   // Shift handover
   const [activeShift, setActiveShift] = useState<ShiftName>('morning');
@@ -630,8 +943,16 @@ export default function HouseApp() {
     [orders],
   );
   const activeOrders = useMemo(
-    () => orders.filter((o) => !isTerminalStatus(o.status)),
-    [orders],
+    () => filterOrdersByQueue(orders, 'active', hiddenOrderIds),
+    [hiddenOrderIds, orders],
+  );
+  const orderQueueSummary = useMemo(
+    () => getOrderQueueSummary(orders, hiddenOrderIds),
+    [hiddenOrderIds, orders],
+  );
+  const selectedQueueOrders = useMemo(
+    () => filterOrdersByQueue(orders, orderQueueView, hiddenOrderIds),
+    [hiddenOrderIds, orderQueueView, orders],
   );
   const todayOrders = useMemo(() => {
     const startOfToday = new Date();
@@ -828,10 +1149,15 @@ export default function HouseApp() {
     return revenueDistribution.filter((segment) => segment.label.toLowerCase().includes(queryText));
   }, [activeSearchQuery, activeTab, revenueDistribution]);
   const visibleOrders = useMemo(() => {
-    const pool = showAllOrders ? activeOrders : todayOrders;
+    const useToday = orderQueueView === 'active' && !showAllOrders;
+    const pool = useToday ? todayOrders : selectedQueueOrders;
     const queryText = activeTab === 'orders' ? activeSearchQuery : '';
     return pool.filter((order) => {
-      if (ordersAttentionOnly && !(order.status === 'incoming' || !order.isRead || isOrderSlaBreached(order))) return false;
+      if (
+        orderQueueView === 'active'
+        && ordersAttentionOnly
+        && !(order.status === 'incoming' || !order.isRead || isOrderSlaBreached(order))
+      ) return false;
       if (!queryText) return true;
       return [
         order.roomNumber,
@@ -840,7 +1166,7 @@ export default function HouseApp() {
         ...order.items.map((item) => item.name),
       ].some((value) => value.toLowerCase().includes(queryText));
     });
-  }, [todayOrders, activeOrders, showAllOrders, activeSearchQuery, activeTab, ordersAttentionOnly]);
+  }, [activeSearchQuery, activeTab, orderQueueView, ordersAttentionOnly, selectedQueueOrders, showAllOrders, todayOrders]);
   const visibleStaffAccounts = useMemo(() => {
     const queryText = (activeTab === 'settings' ? shellSearch : '').trim().toLowerCase();
     if (!queryText) return staffAccounts;
@@ -909,12 +1235,12 @@ export default function HouseApp() {
       if (e.key === 'Escape') {
         if (staffEditor) { setStaffEditor(null); return; }
         if (editingProduct) { setEditingProduct(null); return; }
-        if (confirmDialog) { setConfirmDialog(null); return; }
+        if (confirmDialog && !isConfirmingDialog) { setConfirmDialog(null); return; }
       }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [staffEditor, editingProduct, confirmDialog]);
+  }, [staffEditor, editingProduct, confirmDialog, isConfirmingDialog]);
 
   /* ── Auth ── */
   useEffect(() => {
@@ -963,13 +1289,18 @@ export default function HouseApp() {
     );
 
     const unsubProducts = onSnapshot(collection(db, 'products'), (snap) => {
-      setProducts(snap.docs.map((d) => normalizeProduct(d.id, d.data() as Record<string, unknown>)));
+      setProducts(mergeProducts(snap.docs.map((d) => normalizeProduct(d.id, d.data() as Record<string, unknown>))));
     });
 
     const unsubNotes = onSnapshot(
       query(collection(db, 'shiftNotes'), orderBy('createdAt', 'desc'), limit(60)),
       (snap) => {
-        setShiftNotes(snap.docs.map((d) => normalizeShiftNote(d.id, d.data() as Record<string, unknown>)));
+        const remoteNotes = snap.docs.map((d) => normalizeShiftNote(d.id, d.data() as Record<string, unknown>));
+        setShiftNotes(mergeShiftNotes(remoteNotes));
+      },
+      (err) => {
+        console.error('Failed to load shift notes', err);
+        setShiftNotes(loadLocalShiftNotes());
       },
     );
 
@@ -1085,6 +1416,32 @@ export default function HouseApp() {
     }
   }
 
+  function hasManagerAccess(action: string): boolean {
+    if (identity?.role === 'manager') return true;
+    showDashboardNotice(`Manager account required to ${action}.`);
+    return false;
+  }
+
+  function hideOrderLocally(orderId: string): void {
+    setHiddenOrderIds((current) => {
+      const next = Array.from(new Set([orderId, ...current]));
+      saveLocalHiddenOrderIds(next);
+      return next;
+    });
+  }
+
+  async function executeConfirmDialogAction() {
+    if (!confirmDialog || isConfirmingDialog) return;
+    const action = confirmDialog.onConfirm;
+    setIsConfirmingDialog(true);
+    try {
+      await action();
+      setConfirmDialog(null);
+    } finally {
+      setIsConfirmingDialog(false);
+    }
+  }
+
   /* ── Write handlers ── */
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -1094,7 +1451,7 @@ export default function HouseApp() {
       await signInWithEmailAndPassword(auth, loginForm.credential.trim(), loginForm.password);
     } catch (err) {
       console.error('Admin login failed', err);
-      setAuthError('Login gagal. Gunakan akun manager atau staff yang aktif di Firebase Auth.');
+      setAuthError(getAdminLoginErrorMessage(err));
     } finally {
       setIsLoggingIn(false);
     }
@@ -1103,6 +1460,24 @@ export default function HouseApp() {
   async function handleLogout() {
     await signOut(auth);
     setIdentity(null);
+  }
+
+  async function handlePasswordReset() {
+    const email = loginForm.credential.trim();
+    setAuthError('');
+
+    if (!email || !email.includes('@')) {
+      setAuthError('Masukkan email admin dulu, lalu tekan Forgot password lagi.');
+      return;
+    }
+
+    try {
+      await sendPasswordResetEmail(auth, email);
+      setAuthError(`Link reset password sudah dikirim ke ${email}. Cek inbox atau spam.`);
+    } catch (err) {
+      console.error('Password reset failed', err);
+      setAuthError('Tidak bisa mengirim reset password. Pastikan email admin benar dan terdaftar di Firebase Auth.');
+    }
   }
 
   function showDashboardNotice(message: string) {
@@ -1121,11 +1496,48 @@ export default function HouseApp() {
   function handleNotificationCenter() {
     if (unreadIncomingOrders.length > 0) {
       openAdminTab('orders');
+      setOrderQueueView('active');
       setOrdersAttentionOnly(true);
       showDashboardNotice(`${unreadIncomingOrders.length} unread incoming order${unreadIncomingOrders.length === 1 ? '' : 's'} shown in the priority queue.`);
       return;
     }
     showDashboardNotice('No unread incoming orders right now.');
+  }
+
+  async function updateOrderStatusDocument(orderId: string, status: string): Promise<void> {
+    const updatedAt = new Date();
+    try {
+      await withTimeout(
+        updateDoc(doc(db, 'orders', orderId), { status, isRead: true, updatedAt: serverTimestamp() }),
+        'order-status-timeout',
+      );
+      return;
+    } catch (sdkError) {
+      console.warn('Firebase SDK order status update failed, trying REST fallback.', sdkError);
+    }
+
+    await patchFirestoreDocument('orders', orderId, { status, isRead: true, updatedAt });
+  }
+
+  async function createShiftNoteDocument(note: Omit<ShiftNote, 'id' | 'createdAt'>): Promise<ShiftNote> {
+    const createdAt = new Date();
+    const payload = {
+      ...note,
+      createdAt,
+    };
+
+    try {
+      const id = await createFirestoreDocument('shiftNotes', payload);
+      return { id, ...note, createdAt };
+    } catch (restError) {
+      console.warn('REST handover save failed, trying Firebase SDK.', restError);
+    }
+
+    const ref = await withTimeout(
+      addDoc(collection(db, 'shiftNotes'), { ...note, createdAt: serverTimestamp() }),
+      'shift-note-timeout',
+    );
+    return { id: ref.id, ...note, createdAt };
   }
 
   function handleProfileShortcut() {
@@ -1134,6 +1546,7 @@ export default function HouseApp() {
   }
 
   function toggleOrderPriorityFilter() {
+    setOrderQueueView('active');
     setOrdersAttentionOnly((current) => {
       const next = !current;
       showDashboardNotice(next ? 'Showing incoming, unread, and delayed orders only.' : 'Showing all active orders.');
@@ -1150,7 +1563,7 @@ export default function HouseApp() {
   }
 
   async function clearOldOrders() {
-    if (!identity) return;
+    if (!hasManagerAccess('clear old orders')) return;
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
     const stale = orders.filter((o) => isTerminalStatus(o.status) && o.createdAt && o.createdAt < startOfToday);
@@ -1195,12 +1608,18 @@ export default function HouseApp() {
     try {
       await updateDoc(doc(db, 'orders', order.id), {
         isRead: true,
-        feedbackText: '',
-        feedbackSummary: '',
-        rating: null,
-        managerFollowUpRequested: false,
+        feedbackDetails: deleteField(),
+        feedback: deleteField(),
+        reviewSummary: deleteField(),
+        rating: deleteField(),
+        requestManagerFollowUp: deleteField(),
         updatedAt: serverTimestamp(),
       });
+      setOrders((rows) => rows.map((item) => (
+        item.id === order.id
+          ? { ...item, isRead: true, feedbackText: '', feedbackSummary: '', rating: null, managerFollowUpRequested: false }
+          : item
+      )));
       await logAudit('resolve_feedback', 'order', order.id, { room: order.roomNumber });
       showDashboardNotice(`Feedback from Suite ${order.roomNumber} resolved and cleared.`);
     } catch (err) {
@@ -1212,7 +1631,7 @@ export default function HouseApp() {
   }
 
   async function clearAllResolvedFeedback() {
-    if (!identity) return;
+    if (!hasManagerAccess('clear resolved feedback')) return;
     const resolved = feedbackOrders.filter((o) => o.isRead);
     if (resolved.length === 0) {
       showDashboardNotice('No resolved feedback to clear.');
@@ -1224,14 +1643,58 @@ export default function HouseApp() {
       onConfirm: async () => {
         for (const o of resolved) {
           await updateDoc(doc(db, 'orders', o.id), {
-            feedbackText: '', feedbackSummary: '', rating: null,
-            managerFollowUpRequested: false, updatedAt: serverTimestamp(),
+            feedbackDetails: deleteField(),
+            feedback: deleteField(),
+            reviewSummary: deleteField(),
+            rating: deleteField(),
+            requestManagerFollowUp: deleteField(),
+            updatedAt: serverTimestamp(),
           });
         }
         await logAudit('clear_resolved_feedback', 'order', 'batch', { count: resolved.length });
         showDashboardNotice(`${resolved.length} resolved feedback record(s) cleared.`);
       },
     });
+  }
+
+  function deleteFeedback(order: DashboardOrder) {
+    if (!hasManagerAccess('delete feedback')) return;
+    setConfirmDialog({
+      title: 'Delete Feedback',
+      message: `Delete feedback from Suite ${order.roomNumber}?`,
+      detail: 'This clears the rating, written feedback, summary, and follow-up flag from the order while keeping the order record itself.',
+      confirmLabel: 'Delete Feedback',
+      icon: 'reviews',
+      onConfirm: () => executeDeleteFeedback(order.id),
+    });
+  }
+
+  async function executeDeleteFeedback(orderId: string) {
+    if (!hasManagerAccess('delete feedback')) return;
+    const order = orders.find((item) => item.id === orderId);
+    setBusyActionId(`delete-feedback-${orderId}`);
+    try {
+      await updateDoc(doc(db, 'orders', orderId), {
+        feedbackDetails: deleteField(),
+        feedback: deleteField(),
+        reviewSummary: deleteField(),
+        rating: deleteField(),
+        requestManagerFollowUp: deleteField(),
+        updatedAt: serverTimestamp(),
+      });
+      setOrders((rows) => rows.map((item) => (
+        item.id === orderId
+          ? { ...item, feedbackText: '', feedbackSummary: '', rating: null, managerFollowUpRequested: false }
+          : item
+      )));
+      await logAudit('delete_feedback', 'order', orderId, { roomNumber: order?.roomNumber });
+      showDashboardNotice(`Feedback from Suite ${order?.roomNumber || 'order'} deleted.`);
+    } catch (err) {
+      console.error('Failed to delete feedback', err);
+      showDashboardNotice('Could not delete feedback. Check Firebase permission or connection.');
+    } finally {
+      setBusyActionId(null);
+    }
   }
 
   async function saveSettingsDraft() {
@@ -1267,7 +1730,7 @@ export default function HouseApp() {
       order.id === orderId ? { ...order, status, isRead: true } : order
     )));
     try {
-      await updateDoc(doc(db, 'orders', orderId), { status, isRead: true, updatedAt: serverTimestamp() });
+      await updateOrderStatusDocument(orderId, status);
       await logAudit('status_change', 'order', orderId, { from: prev, to: status });
       showDashboardNotice(`Suite ${current.roomNumber} moved to ${formatStatusLabel(status)}.`);
     } catch (err) {
@@ -1303,75 +1766,240 @@ export default function HouseApp() {
     }
   }
 
-  async function toggleProductAvailability(product: MenuProduct) {
-    const next = !product.isAvailable;
-    setBusyActionId(`product-${product.id}`);
+  function deleteOrder(order: DashboardOrder) {
+    if (!hasManagerAccess('delete orders')) return;
+    setConfirmDialog({
+      title: 'Delete Order',
+      message: `Delete Suite ${order.roomNumber} order from Live Orders?`,
+      detail: 'This removes the order document from the dashboard and revenue calculations. Use Revoke Access when the guest session also needs to be blocked.',
+      confirmLabel: 'Delete Order',
+      icon: 'delete',
+      onConfirm: () => executeDeleteOrder(order.id),
+    });
+  }
+
+  async function executeDeleteOrder(orderId: string) {
+    if (!hasManagerAccess('delete orders')) return;
+    const order = orders.find((item) => item.id === orderId);
+    setBusyActionId(`delete-order-${orderId}`);
     try {
-      await updateDoc(doc(db, 'products', product.id), {
-        isAvailable: next,
-        unavailableReason: next ? '' : (product.unavailableReason || 'Temporarily unavailable'),
-        updatedAt: serverTimestamp(),
-      });
-      await logAudit(next ? 'set_available' : 'set_unavailable', 'product', product.id, { name: product.name });
-      showDashboardNotice(`${product.name} is now ${next ? 'available' : 'offline'}.`);
+      await deleteDoc(doc(db, 'orders', orderId));
+      hideOrderLocally(orderId);
+      setOrders((currentRows) => currentRows.filter((item) => item.id !== orderId));
+      await logAudit('delete_order', 'order', orderId, { roomNumber: order?.roomNumber, status: order?.status });
+      showDashboardNotice(`Suite ${order?.roomNumber || 'order'} deleted.`);
     } catch (err) {
-      console.error('Failed to update product availability', err);
-      showDashboardNotice(`Could not update ${product.name}. Check Firebase permission or connection.`);
+      console.error('Failed to delete order', err);
+      try {
+        await updateOrderStatusDocument(orderId, 'cancelled');
+      } catch (cancelErr) {
+        console.warn('Delete fallback cancel failed; hiding order locally.', cancelErr);
+      }
+      hideOrderLocally(orderId);
+      setOrders((currentRows) => currentRows.map((item) => (
+        item.id === orderId ? { ...item, status: 'cancelled', isRead: true } : item
+      )));
+      showDashboardNotice(`Suite ${order?.roomNumber || 'order'} removed from this dashboard. Deploy Firestore rules to allow hard delete.`);
     } finally {
       setBusyActionId(null);
     }
   }
 
+  async function toggleProductAvailability(product: MenuProduct) {
+    const next = !product.isAvailable;
+    const updatedProduct = {
+      ...product,
+      isAvailable: next,
+      unavailableReason: next ? '' : (product.unavailableReason || 'Temporarily unavailable'),
+    };
+    setBusyActionId(`product-${product.id}`);
+    setProducts((rows) => rows.map((item) => item.id === product.id ? updatedProduct : item));
+    try {
+      if (product.id.startsWith('local-product-')) {
+        upsertLocalProduct(updatedProduct);
+      } else {
+        await withTimeout(updateDoc(doc(db, 'products', product.id), {
+          isAvailable: next,
+          unavailableReason: updatedProduct.unavailableReason,
+          updatedAt: serverTimestamp(),
+        }), 'product-toggle-timeout');
+        upsertLocalProduct(updatedProduct);
+        await logAudit(next ? 'set_available' : 'set_unavailable', 'product', product.id, { name: product.name });
+      }
+      showDashboardNotice(`${product.name} is now ${next ? 'available' : 'offline'}.`);
+    } catch (err) {
+      console.error('Failed to update product availability', err);
+      upsertLocalProduct(updatedProduct);
+      showDashboardNotice(`${product.name} updated on this dashboard. Deploy Firestore rules to sync availability.`);
+    } finally {
+      setBusyActionId(null);
+    }
+  }
+
+  async function handleMenuImageUpload(file: File | undefined) {
+    if (!file || !editingProduct) return;
+    if (!file.type.startsWith('image/')) {
+      showDashboardNotice('Please upload an image file for the menu item.');
+      return;
+    }
+    if (file.size > 3_000_000) {
+      showDashboardNotice('Image is too large. Use an image under 3 MB.');
+      return;
+    }
+
+    const editorId = editingProduct.id;
+    setIsProcessingMenuImage(true);
+    try {
+      const image = await prepareMenuImage(file);
+      setEditingProduct((current) => {
+        if (!current || current.id !== editorId) return current;
+        return { ...current, image };
+      });
+      showDashboardNotice('Image uploaded into the menu editor.');
+    } catch (err) {
+      console.error('Failed to upload menu image', err);
+      showDashboardNotice('Could not read the selected image.');
+    } finally {
+      setIsProcessingMenuImage(false);
+    }
+  }
+
+  async function handleNativeMenuImageUpload(): Promise<boolean> {
+    if (!editingProduct) return false;
+    const editorId = editingProduct.id;
+    setIsProcessingMenuImage(true);
+
+    try {
+      const photo = await Camera.getPhoto({
+        source: CameraSource.Photos,
+        resultType: CameraResultType.DataUrl,
+        quality: 82,
+        width: 1280,
+        allowEditing: false,
+      });
+      if (!photo.dataUrl) throw new Error('native-image-empty');
+      const image = await prepareMenuImageDataUrl(photo.dataUrl);
+      setEditingProduct((current) => {
+        if (!current || current.id !== editorId) return current;
+        return { ...current, image };
+      });
+      showDashboardNotice('Image selected from iPad Photos.');
+      return true;
+    } catch (err) {
+      console.warn('Native menu image picker failed', err);
+      if (isPickerCancellation(err)) return true;
+      showDashboardNotice('iPad photo picker unavailable. Opening file picker fallback.');
+      return false;
+    } finally {
+      setIsProcessingMenuImage(false);
+    }
+  }
+
+  async function openMenuImagePicker() {
+    if (isProcessingMenuImage) return;
+    if (Capacitor.isNativePlatform()) {
+      const didPickNativeImage = await handleNativeMenuImageUpload();
+      if (didPickNativeImage) return;
+    }
+    menuImageInputRef.current?.click();
+  }
+
   async function saveProduct(editor: MenuEditorState) {
-    if (!editor.name.trim()) {
+    const name = editor.name.trim();
+    const category = editor.category.trim() || 'Mains';
+    const numericPrice = Number(editor.price);
+
+    if (!name) {
       showDashboardNotice('Menu item name is required.');
       return;
     }
+    if (!Number.isFinite(numericPrice) || numericPrice < 0) {
+      showDashboardNotice('Use a valid menu price before saving.');
+      return;
+    }
+
     setIsSavingProduct(true);
+    const updatedAt = new Date();
     const payload = {
-      name: editor.name.trim(), category: editor.category.trim(),
-      price: Number(editor.price) || 0, description: editor.description.trim(),
+      name, category,
+      price: numericPrice, description: editor.description.trim(),
       image: editor.image.trim(), isAvailable: editor.isAvailable,
       unavailableReason: editor.unavailableReason.trim(), updatedAt: serverTimestamp(),
     };
+    const localId = editor.id || `local-product-${Date.now()}`;
+    const savedProduct: MenuProduct = {
+      id: localId,
+      sourceItemId: undefined,
+      name,
+      category,
+      price: numericPrice,
+      image: editor.image.trim(),
+      description: editor.description.trim(),
+      isAvailable: editor.isAvailable,
+      unavailableReason: editor.unavailableReason.trim(),
+    };
     try {
-      if (editor.id) {
-        await updateDoc(doc(db, 'products', editor.id), payload);
-        await logAudit('edit_product', 'product', editor.id, { name: editor.name });
-        showDashboardNotice(`${editor.name.trim()} updated in Menu Manager.`);
+      if (editor.id?.startsWith('local-product-')) {
+        setProducts((rows) => rows.map((item) => item.id === editor.id ? { ...savedProduct, id: editor.id as string } : item));
+        upsertLocalProduct({ ...savedProduct, id: editor.id });
+        showDashboardNotice(`${name} updated on this dashboard.`);
+      } else if (editor.id) {
+        await withTimeout(updateDoc(doc(db, 'products', editor.id), payload), 'save-menu-timeout');
+        setProducts((rows) => rows.map((item) => item.id === editor.id ? { ...savedProduct, id: editor.id as string } : item));
+        upsertLocalProduct({ ...savedProduct, id: editor.id });
+        await logAudit('edit_product', 'product', editor.id, { name, updatedAt: updatedAt.toISOString() });
+        showDashboardNotice(`${name} updated in Menu Manager.`);
       } else {
-        const ref = await addDoc(collection(db, 'products'), { ...payload, createdAt: serverTimestamp() });
-        await logAudit('add_product', 'product', ref.id, { name: editor.name });
-        showDashboardNotice(`${editor.name.trim()} added to Menu Manager.`);
+        const ref = await withTimeout(addDoc(collection(db, 'products'), { ...payload, createdAt: serverTimestamp() }), 'save-menu-timeout');
+        setProducts((rows) => [{ ...savedProduct, id: ref.id }, ...rows]);
+        upsertLocalProduct({ ...savedProduct, id: ref.id });
+        await logAudit('add_product', 'product', ref.id, { name, updatedAt: updatedAt.toISOString() });
+        showDashboardNotice(`${name} added to Menu Manager.`);
       }
       setEditingProduct(null);
     } catch (err) {
       console.error('Failed to save menu item', err);
-      showDashboardNotice('Could not save menu item. Check Firebase permission or connection.');
+      upsertLocalProduct(savedProduct);
+      setProducts((rows) => [savedProduct, ...rows.filter((item) => item.id !== savedProduct.id)]);
+      setEditingProduct(null);
+      showDashboardNotice(`${name} saved on this dashboard. Deploy Firestore rules to sync it to cloud.`);
     } finally {
       setIsSavingProduct(false);
     }
   }
 
   function deleteProduct(productId: string) {
+    if (!hasManagerAccess('remove menu items')) return;
     const product = products.find((p) => p.id === productId);
     setConfirmDialog({
       title: 'Remove Menu Item',
       message: `Remove ${product?.name || 'this menu item'} from Menu Manager? This action cannot be undone.`,
+      detail: 'Only manager accounts can delete menu data. Staff can still edit availability when permitted.',
+      confirmLabel: 'Remove Item',
+      icon: 'delete',
       onConfirm: () => executeDeleteProduct(productId),
     });
   }
 
   async function executeDeleteProduct(productId: string) {
+    if (!hasManagerAccess('remove menu items')) return;
     const product = products.find((p) => p.id === productId);
     setBusyActionId(`delete-product-${productId}`);
     try {
       await deleteDoc(doc(db, 'products', productId));
+      removeLocalProduct(productId);
+      setProducts((rows) => rows.filter((item) => item.id !== productId));
       await logAudit('delete_product', 'product', productId, { name: product?.name });
       showDashboardNotice(`${product?.name || 'Menu item'} removed from Menu Manager.`);
     } catch (err) {
       console.error('Failed to delete product', err);
-      showDashboardNotice('Could not remove menu item. Check Firebase permission or connection.');
+      if (productId.startsWith('local-product-')) {
+        removeLocalProduct(productId);
+        setProducts((rows) => rows.filter((item) => item.id !== productId));
+        showDashboardNotice(`${product?.name || 'Menu item'} removed from this dashboard.`);
+      } else {
+        showDashboardNotice('Could not remove menu item. Check Firebase permission or connection.');
+      }
     } finally {
       setBusyActionId(null);
     }
@@ -1410,23 +2038,74 @@ export default function HouseApp() {
     }
   }
 
-  function handleRevokeGuest(guestUid: string) {
+  function handleRevokeOrder(order: DashboardOrder) {
+    if (!hasManagerAccess('revoke guest access')) return;
+    if (!canRevokeOrderAccess(order)) {
+      showDashboardNotice('This order has no active guest session or access token to revoke.');
+      return;
+    }
     setConfirmDialog({
-      title: 'Revoke Guest Session',
-      message: 'Revoke this guest session? The guest will need to request a new QR access link.',
-      onConfirm: () => executeRevokeGuest(guestUid),
+      title: 'Revoke Order Access',
+      message: `Revoke access for Suite ${order.roomNumber}?`,
+      detail: 'The guest QR/session token will stop working immediately and this order will be marked cancelled so it no longer stays in the active queue.',
+      confirmLabel: 'Revoke Order',
+      cancelLabel: 'Keep Active',
+      icon: 'block',
+      onConfirm: () => executeRevokeOrder(order),
     });
   }
 
-  async function executeRevokeGuest(guestUid: string) {
-    setRevokingSessionId(guestUid);
+  async function executeRevokeOrder(order: DashboardOrder) {
+    if (!hasManagerAccess('revoke guest access')) return;
+    if (!canRevokeOrderAccess(order)) return;
+
+    const busyId = `revoke-order-${order.id}`;
+    setRevokingSessionId(busyId);
     try {
-      await revokeGuestSessionAsAdmin(guestUid);
-      await logAudit('revoke_guest_session', 'guestSession', guestUid);
-      showDashboardNotice('Guest session revoked. The guest must request a new QR access link.');
+      await updateDoc(doc(db, 'orders', order.id), {
+        status: 'cancelled',
+        isRead: true,
+        updatedAt: serverTimestamp(),
+      });
+
+      const revocationWrites: Promise<unknown>[] = [];
+
+      if (order.guestUid) {
+        revocationWrites.push(setDoc(doc(db, 'guest_access_sessions', order.guestUid), {
+          status: 'revoked',
+          expiresAt: serverTimestamp(),
+          revokedAt: serverTimestamp(),
+          revokedBy: identity?.uid || 'manager',
+        }, { merge: true }));
+      }
+
+      if (order.accessTokenId) {
+        revocationWrites.push(setDoc(doc(db, 'guest_access_tokens', order.accessTokenId), {
+          status: 'revoked',
+          expiresAt: serverTimestamp(),
+          revokedAt: serverTimestamp(),
+          revokedBy: identity?.uid || 'manager',
+        }, { merge: true }));
+      }
+
+      const revocationResults = await Promise.allSettled(revocationWrites);
+      const failedRevocationWrites = revocationResults.filter((result) => result.status === 'rejected');
+      setOrders((rows) => rows.map((item) => (
+        item.id === order.id ? { ...item, status: 'cancelled', isRead: true } : item
+      )));
+      await logAudit('revoke_order_access', 'order', order.id, {
+        guestUid: order.guestUid || null,
+        accessTokenId: order.accessTokenId || null,
+        sessionWritesBlocked: failedRevocationWrites.length > 0,
+      });
+      showDashboardNotice(
+        failedRevocationWrites.length > 0
+          ? `Suite ${order.roomNumber} cancelled. Deploy updated Firestore rules to block the guest token/session too.`
+          : `Suite ${order.roomNumber} revoked and removed from the active queue.`,
+      );
     } catch (err) {
-      console.error('Failed to revoke guest session', err);
-      showDashboardNotice('Could not revoke guest session. Check Firebase callable functions and permission.');
+      console.error('Failed to revoke order access', err);
+      showDashboardNotice('Could not revoke this order. Check Firebase permission or connection.');
     } finally {
       setRevokingSessionId(null);
     }
@@ -1446,19 +2125,68 @@ export default function HouseApp() {
   async function saveHandoverNote() {
     if (!handoverDraft.trim() || !identity) return;
     setIsSavingNote(true);
+    const noteInput = {
+      shift: activeShift,
+      note: handoverDraft.trim(),
+      authorName: identity.name,
+      authorUid: identity.uid,
+    };
     try {
-      const ref = await addDoc(collection(db, 'shiftNotes'), {
-        shift: activeShift,
-        note: handoverDraft.trim(),
-        authorName: identity.name,
-        authorUid: identity.uid,
-        createdAt: serverTimestamp(),
-      });
-      await logAudit('add_shift_note', 'shiftNote', ref.id, { shift: activeShift });
+      const savedNote = await createShiftNoteDocument(noteInput);
+      await logAudit('add_shift_note', 'shiftNote', savedNote.id, { shift: activeShift });
       setHandoverDraft('');
+      setShiftNotes((current) => mergeShiftNotes([savedNote, ...current]));
       showDashboardNotice(`Handover note posted to ${activeShift} shift.`);
+    } catch (err) {
+      console.error('Failed to save handover note to cloud, saving locally', err);
+      const localNote: ShiftNote = {
+        id: `local-${Date.now()}`,
+        ...noteInput,
+        createdAt: new Date(),
+      };
+      persistLocalShiftNote(localNote);
+      setShiftNotes((current) => mergeShiftNotes([localNote, ...current]));
+      setHandoverDraft('');
+      showDashboardNotice('Handover note saved on this dashboard. Cloud sync is unavailable.');
     } finally {
       setIsSavingNote(false);
+    }
+  }
+
+  function deleteShiftNote(note: ShiftNote) {
+    if (!hasManagerAccess('delete handover notes')) return;
+    setConfirmDialog({
+      title: 'Delete Handover Note',
+      message: `Delete ${note.shift} shift note from ${note.authorName || 'operator'}?`,
+      detail: 'This removes the note from the handover board. Local fallback notes are removed from this device only.',
+      confirmLabel: 'Delete Note',
+      icon: 'delete',
+      onConfirm: () => executeDeleteShiftNote(note),
+    });
+  }
+
+  async function executeDeleteShiftNote(note: ShiftNote) {
+    if (!hasManagerAccess('delete handover notes')) return;
+    setBusyActionId(`delete-note-${note.id}`);
+    try {
+      if (note.id.startsWith('local-')) {
+        const nextLocalNotes = loadLocalShiftNotes().filter((item) => item.id !== note.id);
+        window.localStorage.setItem(LOCAL_SHIFT_NOTES_KEY, JSON.stringify(nextLocalNotes.map((item) => ({
+          ...item,
+          createdAt: item.createdAt ? item.createdAt.toISOString() : null,
+        }))));
+      } else {
+        await deleteDoc(doc(db, 'shiftNotes', note.id));
+      }
+
+      setShiftNotes((rows) => rows.filter((item) => item.id !== note.id));
+      await logAudit('delete_shift_note', 'shiftNote', note.id, { shift: note.shift });
+      showDashboardNotice('Handover note deleted.');
+    } catch (err) {
+      console.error('Failed to delete handover note', err);
+      showDashboardNotice('Could not delete handover note. Check Firebase permission or connection.');
+    } finally {
+      setBusyActionId(null);
     }
   }
 
@@ -1507,15 +2235,20 @@ export default function HouseApp() {
   }
 
   function removeStaffAccount(uid: string) {
+    if (!hasManagerAccess('remove staff accounts')) return;
     const staff = staffAccounts.find((account) => account.uid === uid);
     setConfirmDialog({
       title: 'Remove Staff Account',
       message: `Remove ${staff?.name || 'this staff account'} from admin access? This action cannot be undone.`,
+      detail: 'This removes dashboard access for the selected operator. Existing audit logs are kept.',
+      confirmLabel: 'Remove Staff',
+      icon: 'person_remove',
       onConfirm: () => executeRemoveStaffAccount(uid),
     });
   }
 
   async function executeRemoveStaffAccount(uid: string) {
+    if (!hasManagerAccess('remove staff accounts')) return;
     setTeamStatus('');
     try {
       await deleteAdminUser(uid);
@@ -1785,7 +2518,7 @@ export default function HouseApp() {
                   </label>
                   <button
                     type="button"
-                    onClick={() => setAuthError('Password reset is handled by the duty manager through Admin Team Access.')}
+                    onClick={handlePasswordReset}
                     style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', color: 'rgba(255,255,255,0.65)', textDecoration: 'underline', textUnderlineOffset: '3px', padding: 0 }}
                   >
                     Forgot password?
@@ -1944,7 +2677,7 @@ export default function HouseApp() {
           <header className="admin-topbar fixed top-0 right-0 z-40 bg-stone-50/80 backdrop-blur-md shadow-[0_20px_40px_rgba(26,28,27,0.06)] w-full md:w-[calc(100%-16rem)] px-8 py-6 flex justify-between items-center">
             <div className="flex-1 min-w-0">
               <div className="admin-shell-search relative">
-                <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-[#4e4639] text-[18px]">search</span>
+                <span className="admin-shell-search-icon material-symbols-outlined text-[#4e4639] text-[18px]">search</span>
                 <input
                   type="search"
                   value={shellSearch}
@@ -2041,7 +2774,7 @@ export default function HouseApp() {
                     >
                       {ordersAttentionOnly ? 'Show All' : 'Priority Filter'}
                     </button>
-                    <ManagerOnly role={identity.role}>
+                    {identity.role === 'manager' ? (
                       <button
                         className="font-['Manrope'] text-sm font-semibold tracking-wide text-[#ba1a1a] bg-red-50 px-5 py-2 rounded-full border border-red-100 hover:bg-red-100 transition-colors"
                         onClick={clearOldOrders}
@@ -2049,7 +2782,7 @@ export default function HouseApp() {
                       >
                         Clear Old
                       </button>
-                    </ManagerOnly>
+                    ) : null}
                     <button
                       className={`font-['Manrope'] text-sm font-semibold tracking-wide text-white px-5 py-2 rounded hover:bg-[#775a19]/90 transition-colors ${isOrderIntakePaused ? 'bg-[#1a1c1b]' : 'bg-[#775a19]'}`}
                       onClick={toggleOrderIntake}
@@ -2076,12 +2809,37 @@ export default function HouseApp() {
                   </div>
                 </div>
 
+                <div className="admin-order-queue-tabs mb-8" role="tablist" aria-label="Live order queues">
+                  {ORDER_QUEUE_VIEWS.map((view) => {
+                    const isSelected = orderQueueView === view.id;
+                    return (
+                      <button
+                        key={view.id}
+                        type="button"
+                        role="tab"
+                        aria-selected={isSelected}
+                        className={`admin-order-queue-tab ${isSelected ? 'is-active' : ''}`}
+                        onClick={() => {
+                          setOrderQueueView(view.id);
+                          if (view.id !== 'active') setOrdersAttentionOnly(false);
+                        }}
+                      >
+                        <span className="admin-order-queue-tab-label">{view.label}</span>
+                        <strong>{orderQueueSummary[view.id]}</strong>
+                        <small>{view.helper}</small>
+                      </button>
+                    );
+                  })}
+                </div>
+
                 {!dataLoaded ? (
                   <LoadingSkeleton lines={4} />
                 ) : visibleOrders.length === 0 ? (
                   <div className={`${ELEVATED_PANEL_CLASS} p-12 text-center`}>
                     <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">restaurant</span>
-                    <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No active orders match the current queue.</p>
+                    <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">
+                      No {orderQueueView === 'active' ? 'active' : orderQueueView} orders match this queue.
+                    </p>
                   </div>
                 ) : (
                   <div className="space-y-6">
@@ -2103,12 +2861,12 @@ export default function HouseApp() {
                                 {sla ? 'Delayed' : formatStatusLabel(order.status)}
                               </span>
                               <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Suite {order.roomNumber}</h3>
-                              <p className="font-['Manrope'] text-sm text-[#5f5e5e] mt-1">{order.lastName || 'Guest'}</p>
+                              <p className="font-['Manrope'] text-sm text-[#5f5e5e] mt-1">{getAdminGuestDisplayName(order.lastName)}</p>
                             </div>
                             <div className="mt-10">
                               <p className="font-['Manrope'] text-[10px] text-[#5f5e5e] tracking-widest uppercase">Ordered</p>
                               <p className="font-['Manrope'] font-medium text-[#1a1c1b] text-sm mt-1">
-                                {order.createdAt ? order.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Unknown'}
+                                {getOrderClockLabel(order.createdAt)}
                                 {' '}
                                 ({formatRelativeTime(order.createdAt)})
                               </p>
@@ -2174,15 +2932,26 @@ export default function HouseApp() {
                                     {busyActionId === `read-${order.id}` ? 'Updating...' : 'Mark as Read'}
                                   </button>
                                 ) : null}
-                                {sla && (order.accessTokenId || order.guestUid) ? (
+                                {identity.role === 'manager' && canRevokeOrderAccess(order) ? (
                                   <button
                                     className="font-['Manrope'] text-sm font-medium text-[#ba1a1a] px-4 py-2 rounded border border-[#ba1a1a]/20 hover:bg-[#ffdad6] transition-colors disabled:opacity-50 flex items-center gap-1"
-                                    disabled={revokingSessionId === (order.accessTokenId || order.guestUid)}
-                                    onClick={() => handleRevokeGuest(order.accessTokenId || order.guestUid)}
+                                    disabled={revokingSessionId === `revoke-order-${order.id}`}
+                                    onClick={() => handleRevokeOrder(order)}
                                     type="button"
                                   >
                                     <span className="material-symbols-outlined text-[16px]">block</span>
-                                    {revokingSessionId === (order.accessTokenId || order.guestUid) ? 'Revoking...' : 'Revoke'}
+                                    {revokingSessionId === `revoke-order-${order.id}` ? 'Revoking...' : 'Revoke'}
+                                  </button>
+                                ) : null}
+                                {identity.role === 'manager' ? (
+                                  <button
+                                    className="font-['Manrope'] text-sm font-medium text-[#ba1a1a] px-4 py-2 rounded border border-[#ba1a1a]/20 hover:bg-[#ffdad6] transition-colors disabled:opacity-50 flex items-center gap-1"
+                                    disabled={busyActionId === `delete-order-${order.id}`}
+                                    onClick={() => deleteOrder(order)}
+                                    type="button"
+                                  >
+                                    <span className="material-symbols-outlined text-[16px]">delete</span>
+                                    {busyActionId === `delete-order-${order.id}` ? 'Deleting...' : 'Delete'}
                                   </button>
                                 ) : null}
                               </div>
@@ -2270,21 +3039,32 @@ export default function HouseApp() {
                             </button>
                           </div>
                           <div className="flex items-center gap-3">
-                            <label className="relative inline-flex items-center cursor-pointer">
-                              <input
-                                type="checkbox" className="sr-only peer"
-                                checked={product.isAvailable}
-                                onChange={() => toggleProductAvailability(product)}
-                              />
-                              <div className="w-11 h-6 bg-[#e9e8e6] rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:border-[#e9e8e6] after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#775a19]" />
-                            </label>
                             <button
-                              className="text-[#ba1a1a] hover:text-[#93000a] transition-colors p-2 rounded-full hover:bg-[#ffdad6]"
-                              disabled={busyActionId === `delete-product-${product.id}`}
-                              onClick={() => deleteProduct(product.id)} type="button"
+                              aria-label={`${product.isAvailable ? 'Disable' : 'Enable'} ${product.name}`}
+                              aria-checked={product.isAvailable}
+                              className={`admin-availability-switch ${product.isAvailable ? 'is-on' : 'is-off'}`}
+                              disabled={busyActionId === `product-${product.id}`}
+                              onClick={() => toggleProductAvailability(product)}
+                              role="switch"
+                              type="button"
                             >
-                              <span className="material-symbols-outlined text-[20px]">delete</span>
+                              <span className="admin-availability-switch-label">
+                                {product.isAvailable ? 'ON' : 'OFF'}
+                              </span>
+                              <span className="admin-availability-switch-track">
+                                <span className="admin-availability-switch-thumb" />
+                              </span>
                             </button>
+                            {identity.role === 'manager' ? (
+                              <button
+                                aria-label={`Remove ${product.name}`}
+                                className="text-[#ba1a1a] hover:text-[#93000a] transition-colors p-2 rounded-full hover:bg-[#ffdad6]"
+                                disabled={busyActionId === `delete-product-${product.id}`}
+                                onClick={() => deleteProduct(product.id)} type="button"
+                              >
+                                <span className="material-symbols-outlined text-[20px]">delete</span>
+                              </button>
+                            ) : null}
                           </div>
                         </div>
                       </div>
@@ -2310,8 +3090,8 @@ export default function HouseApp() {
                 <div className="flex flex-col md:flex-row md:justify-between md:items-end mb-10 gap-6">
                   <div className="max-w-2xl">
                     <span className="uppercase tracking-[0.1em] text-xs font-bold text-[#775a19] mb-3 block font-['Manrope']">Guest Relations</span>
-                    <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight font-semibold mb-3">Curated Feedback</h2>
-                    <p className="font-['Manrope'] text-[#4e4639] text-base font-light leading-relaxed">Review recent dining experiences to maintain the exacting standards of our culinary service.</p>
+                    <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight font-semibold mb-3">Guest Feedback</h2>
+                    <p className="font-['Manrope'] text-[#4e4639] text-base font-light leading-relaxed">Review ratings, written comments, and follow-up requests from recent dining orders.</p>
                   </div>
                   <div className="flex gap-4 shrink-0">
                     <div className="bg-[#f4f3f1] p-5 rounded min-w-[140px]">
@@ -2353,7 +3133,7 @@ export default function HouseApp() {
                       </button>
                     ))}
                   </div>
-                  <ManagerOnly role={identity.role}>
+                  {identity.role === 'manager' ? (
                     <button
                       type="button"
                       onClick={clearAllResolvedFeedback}
@@ -2361,7 +3141,7 @@ export default function HouseApp() {
                     >
                       Dismiss All Resolved
                     </button>
-                  </ManagerOnly>
+                  ) : null}
                 </div>
 
                 {!dataLoaded ? (
@@ -2393,7 +3173,7 @@ export default function HouseApp() {
                                 ))}
                               </div>
                               <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">
-                                {feedbackHeroOrder.feedbackSummary || 'Guest rating submitted'}
+                                {buildFeedbackHeadline(feedbackHeroOrder)}
                               </h3>
                             </div>
                             <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639] bg-[#f4f3f1] px-3 py-1 rounded">
@@ -2401,21 +3181,28 @@ export default function HouseApp() {
                             </span>
                           </div>
                           <p className="font-['Manrope'] text-[#4e4639] leading-relaxed mb-8 mt-0">
-                            "{feedbackHeroOrder.feedbackText || feedbackHeroOrder.feedbackSummary || 'Guest submitted a rating without written comments.'}"
+                            "{buildFeedbackQuote(feedbackHeroOrder)}"
                           </p>
                           <div className="flex justify-between items-end border-t border-[#e3e2e0]/50 pt-6 mt-auto">
                             <div className="flex items-center gap-4">
                               <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#1a1c1b] text-white">
-                                {feedbackHeroOrder.lastName?.slice(0, 1) || 'G'}
+                                {getAdminGuestDisplayName(feedbackHeroOrder.lastName).slice(0, 1)}
                               </div>
                               <div>
-                                <p className="font-['Manrope'] text-base text-[#1a1c1b]">{feedbackHeroOrder.lastName || 'Guest'}</p>
+                                <p className="font-['Manrope'] text-base text-[#1a1c1b]">{getAdminGuestDisplayName(feedbackHeroOrder.lastName)}</p>
                                 <p className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatFeedbackTime(feedbackHeroOrder.createdAt)}</p>
                               </div>
                             </div>
-                            <button className="text-[#775a19] font-['Manrope'] text-sm uppercase tracking-widest hover:text-[#c5a059] transition-colors" onClick={() => acknowledgeFeedback(feedbackHeroOrder)} type="button">
-                              Acknowledge
-                            </button>
+                            <div className="flex flex-wrap justify-end gap-2">
+                              <button className="text-[#775a19] font-['Manrope'] text-sm uppercase tracking-widest hover:text-[#c5a059] transition-colors" onClick={() => acknowledgeFeedback(feedbackHeroOrder)} type="button">
+                                Acknowledge
+                              </button>
+                              {identity.role === 'manager' ? (
+                                <button className="text-[#ba1a1a] font-['Manrope'] text-sm uppercase tracking-widest hover:bg-[#ffdad6] px-2 py-1 rounded transition-colors" disabled={busyActionId === `delete-feedback-${feedbackHeroOrder.id}`} onClick={() => deleteFeedback(feedbackHeroOrder)} type="button">
+                                  {busyActionId === `delete-feedback-${feedbackHeroOrder.id}` ? 'Deleting...' : 'Delete'}
+                                </button>
+                              ) : null}
+                            </div>
                           </div>
                         </article>
                       ) : null}
@@ -2440,16 +3227,23 @@ export default function HouseApp() {
                             <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]">Suite {feedbackSideOrder.roomNumber}</span>
                           </div>
                           <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b] mb-3">
-                            {feedbackSideOrder.feedbackSummary || 'Guest experience note'}
+                            {buildFeedbackHeadline(feedbackSideOrder)}
                           </h3>
                           <p className="font-['Manrope'] text-[#4e4639] text-sm leading-relaxed mb-8 flex-grow">
-                            "{feedbackSideOrder.feedbackText || feedbackSideOrder.feedbackSummary || 'Guest shared a concise dining impression.'}"
+                            "{buildFeedbackQuote(feedbackSideOrder)}"
                           </p>
                           <div className="flex justify-between items-end border-t border-[#e3e2e0]/50 pt-4">
                             <p className="font-['Manrope'] text-sm text-[#5f5e5e]">{formatFeedbackTime(feedbackSideOrder.createdAt)}</p>
-                            <button className="text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest hover:text-[#c5a059] transition-colors" onClick={() => replyToFeedback(feedbackSideOrder)} type="button">
-                              Reply
-                            </button>
+                            <div className="flex flex-wrap justify-end gap-2">
+                              <button className="text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest hover:text-[#c5a059] transition-colors" onClick={() => replyToFeedback(feedbackSideOrder)} type="button">
+                                Reply
+                              </button>
+                              {identity.role === 'manager' ? (
+                                <button className="text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest hover:bg-[#ffdad6] px-2 py-1 rounded transition-colors" disabled={busyActionId === `delete-feedback-${feedbackSideOrder.id}`} onClick={() => deleteFeedback(feedbackSideOrder)} type="button">
+                                  {busyActionId === `delete-feedback-${feedbackSideOrder.id}` ? 'Deleting...' : 'Delete'}
+                                </button>
+                              ) : null}
+                            </div>
                           </div>
                         </article>
                       ) : null}
@@ -2477,19 +3271,26 @@ export default function HouseApp() {
                               <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]">Suite {feedbackIssueOrder.roomNumber}</span>
                             </div>
                             <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b] mb-3">
-                              {feedbackIssueOrder.feedbackSummary || 'Review requires follow-up'}
+                              {buildFeedbackHeadline(feedbackIssueOrder)}
                             </h3>
                             <p className="font-['Manrope'] text-[#4e4639] text-sm leading-relaxed mb-8 flex-grow">
-                              "{feedbackIssueOrder.feedbackText || 'Action required on this guest experience.'}"
+                              "{buildFeedbackQuote(feedbackIssueOrder)}"
                             </p>
                             <div className="flex justify-between items-end border-t border-[#ba1a1a]/10 pt-4">
                               <div>
                                 <p className="font-['Manrope'] text-xs text-[#ba1a1a] font-medium">Action Required</p>
                                 <p className="font-['Manrope'] text-xs text-[#5f5e5e]">{formatFeedbackTime(feedbackIssueOrder.createdAt)}</p>
                               </div>
-                              <button className="text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest hover:bg-[#ba1a1a]/5 px-2 py-1 rounded transition-colors" onClick={() => resolveFeedback(feedbackIssueOrder)} type="button">
-                                Resolve
-                              </button>
+                              <div className="flex flex-wrap justify-end gap-2">
+                                <button className="text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest hover:bg-[#ba1a1a]/5 px-2 py-1 rounded transition-colors" onClick={() => resolveFeedback(feedbackIssueOrder)} type="button">
+                                  Resolve
+                                </button>
+                                {identity.role === 'manager' ? (
+                                  <button className="text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest hover:bg-[#ffdad6] px-2 py-1 rounded transition-colors" disabled={busyActionId === `delete-feedback-${feedbackIssueOrder.id}`} onClick={() => deleteFeedback(feedbackIssueOrder)} type="button">
+                                    {busyActionId === `delete-feedback-${feedbackIssueOrder.id}` ? 'Deleting...' : 'Delete'}
+                                  </button>
+                                ) : null}
+                              </div>
                             </div>
                           </div>
                         </article>
@@ -2515,14 +3316,14 @@ export default function HouseApp() {
                               </div>
                               <div className="mb-6 flex items-center justify-between gap-4">
                                 <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">
-                                  {feedbackStoryOrder.feedbackSummary || 'Dining experience recap'}
+                                  {buildFeedbackHeadline(feedbackStoryOrder)}
                                 </h3>
                                 <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639] bg-[#f4f3f1] px-3 py-1 rounded">
                                   Suite {feedbackStoryOrder.roomNumber}
                                 </span>
                               </div>
                               <p className="font-['Manrope'] text-[#4e4639] text-sm leading-relaxed mb-6">
-                                "{feedbackStoryOrder.feedbackText || feedbackStoryOrder.feedbackSummary || 'Guest shared a memorable meal recap.'}"
+                                "{buildFeedbackQuote(feedbackStoryOrder)}"
                               </p>
                             </div>
                           </div>
@@ -2536,11 +3337,18 @@ export default function HouseApp() {
                               </ul>
                             </div>
                           </div>
-                          <div className="mt-6 flex justify-between items-center w-full md:hidden">
+                          <div className="mt-6 flex justify-between items-center w-full">
                             <p className="font-['Manrope'] text-xs text-[#5f5e5e]">{formatFeedbackTime(feedbackStoryOrder.createdAt)}</p>
-                            <button className="text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest hover:text-[#c5a059] transition-colors" onClick={() => acknowledgeFeedback(feedbackStoryOrder)} type="button">
-                              Acknowledge
-                            </button>
+                            <div className="flex flex-wrap justify-end gap-2">
+                              <button className="text-[#775a19] font-['Manrope'] text-xs uppercase tracking-widest hover:text-[#c5a059] transition-colors" onClick={() => acknowledgeFeedback(feedbackStoryOrder)} type="button">
+                                Acknowledge
+                              </button>
+                              {identity.role === 'manager' ? (
+                                <button className="text-[#ba1a1a] font-['Manrope'] text-xs uppercase tracking-widest hover:bg-[#ffdad6] px-2 py-1 rounded transition-colors" disabled={busyActionId === `delete-feedback-${feedbackStoryOrder.id}`} onClick={() => deleteFeedback(feedbackStoryOrder)} type="button">
+                                  {busyActionId === `delete-feedback-${feedbackStoryOrder.id}` ? 'Deleting...' : 'Delete'}
+                                </button>
+                              ) : null}
+                            </div>
                           </div>
                         </article>
                       ) : null}
@@ -2560,8 +3368,8 @@ export default function HouseApp() {
                     <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight font-semibold">Revenue</h2>
                     <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm tracking-wide">Track financial performance and export reports for accounting.</p>
                   </div>
-                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-12">
-                    <div className="revenue-range-toggle flex gap-2 bg-[#f4f3f1] p-1 rounded-full border border-[#e3e2e0]/50">
+                  <div className="admin-revenue-toolbar flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-12">
+                    <div className="admin-revenue-range-toggle revenue-range-toggle flex gap-2 bg-[#f4f3f1] p-1 rounded-full border border-[#e3e2e0]/50">
                       {(['daily', 'weekly', 'monthly'] as const).map((range) => (
                         <button
                           key={range}
@@ -2585,8 +3393,8 @@ export default function HouseApp() {
                   </div>
 
                   {/* KPI Grid */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
-                    <div className="bg-white rounded-lg p-8 shadow-[0_20px_40px_rgba(26,28,27,0.06)] relative overflow-hidden group">
+                  <div className="admin-revenue-kpi-grid grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+                    <div className="admin-revenue-kpi-card bg-white rounded-lg p-8 shadow-[0_20px_40px_rgba(26,28,27,0.06)] relative overflow-hidden group">
                       <div className="absolute -right-8 -top-8 w-32 h-32 bg-[#c5a059]/10 rounded-full blur-2xl group-hover:bg-[#c5a059]/20 transition-all" />
                       <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Total Revenue</p>
                       <h3 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] mb-4 tracking-tight">{formatIdr(revenueOverview.revenue)}</h3>
@@ -2600,7 +3408,7 @@ export default function HouseApp() {
                         <span className="font-['Manrope'] text-xs text-[#5f5e5e]">vs last period</span>
                       </div>
                     </div>
-                    <div className="bg-[#f4f3f1] rounded-lg p-8 relative overflow-hidden border border-[#e3e2e0]/30">
+                    <div className="admin-revenue-kpi-card bg-[#f4f3f1] rounded-lg p-8 relative overflow-hidden border border-[#e3e2e0]/30">
                       <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Average Order Value</p>
                       <h3 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] mb-4 tracking-tight">{formatIdr(revenueOverview.averageOrderValue)}</h3>
                       <div className="flex items-center gap-2 text-sm">
@@ -2613,7 +3421,7 @@ export default function HouseApp() {
                         <span className="font-['Manrope'] text-xs text-[#5f5e5e]">vs last period</span>
                       </div>
                     </div>
-                    <div className="bg-[#f4f3f1] rounded-lg p-8 relative overflow-hidden border border-[#e3e2e0]/30">
+                    <div className="admin-revenue-kpi-card bg-[#f4f3f1] rounded-lg p-8 relative overflow-hidden border border-[#e3e2e0]/30">
                       <p className="font-['Manrope'] text-xs uppercase tracking-widest text-[#5f5e5e] mb-2">Total Orders</p>
                       <h3 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] mb-4 tracking-tight">{revenueOverview.totalOrders}</h3>
                       <div className="flex items-center gap-2 text-sm">
@@ -2792,7 +3600,7 @@ export default function HouseApp() {
                         <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">Note</p>
                         <textarea
                           className="w-full bg-[#f4f3f1] border-none rounded-[18px] px-4 py-3 font-['Manrope'] text-sm text-[#1a1c1b] outline-none resize-none min-h-[140px] placeholder:text-[#4e4639]/50 ring-1 ring-[#ece5db]"
-                          placeholder="e.g. Suite 402 guest requires dairy-free options. Fryer #2 under maintenance until 18:00."
+                          placeholder="Write shift-critical context for the next operator."
                           value={handoverDraft}
                           onChange={(e) => setHandoverDraft(e.target.value)}
                         />
@@ -2831,9 +3639,21 @@ export default function HouseApp() {
                                   <p className="font-['Manrope'] text-sm text-[#1a1c1b] leading-6">{note.note}</p>
                                   <div className="mt-2 flex items-center justify-between">
                                     <span className="font-['Manrope'] text-[10px] text-[#4e4639] font-semibold">{note.authorName}</span>
-                                    <span className="font-['Manrope'] text-[10px] text-[#4e4639]/70">
-                                      {note.createdAt ? note.createdAt.toLocaleString() : '—'}
-                                    </span>
+                                    <div className="flex items-center justify-end gap-2">
+                                      <span className="font-['Manrope'] text-[10px] text-[#4e4639]/70">
+                                        {note.createdAt ? note.createdAt.toLocaleString() : '—'}
+                                      </span>
+                                      {identity.role === 'manager' ? (
+                                        <button
+                                          className="text-[#ba1a1a] font-['Manrope'] text-[10px] uppercase tracking-widest hover:bg-[#ffdad6] px-2 py-1 rounded transition-colors"
+                                          disabled={busyActionId === `delete-note-${note.id}`}
+                                          onClick={() => deleteShiftNote(note)}
+                                          type="button"
+                                        >
+                                          {busyActionId === `delete-note-${note.id}` ? 'Deleting...' : 'Delete'}
+                                        </button>
+                                      ) : null}
+                                    </div>
                                   </div>
                                 </div>
                               ))}
@@ -2873,9 +3693,9 @@ export default function HouseApp() {
                       <span className="material-symbols-outlined text-[#c5a059]" style={{ fontVariationSettings: "'FILL' 1" }}>schedule</span>
                       <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Operating Hours</h3>
                     </div>
-                    <div className="space-y-5">
+                    <div className="space-y-4">
                       {operatingHours.map((row) => (
-                        <div key={row.day} style={{ display: 'grid', gridTemplateColumns: '1.5rem 8rem 1fr auto 1fr', alignItems: 'center', gap: '0.75rem' }}>
+                        <div key={row.day} className="admin-hours-row">
                           <input
                             type="checkbox"
                             checked={row.enabled}
@@ -2884,23 +3704,23 @@ export default function HouseApp() {
                             )))}
                             className="h-5 w-5 accent-[#775a19]"
                           />
-                          <span className="font-['Manrope'] text-sm text-[#1a1c1b]">{row.day}</span>
+                          <span className="admin-hours-day font-['Manrope'] text-sm text-[#1a1c1b]">{row.day}</span>
                           <input
                             type="time"
                             value={row.opensAt}
                             onChange={(e) => setOperatingHours((current) => current.map((item) => (
                               item.day === row.day ? { ...item, opensAt: e.target.value } : item
                             )))}
-                            className="w-full bg-[#e9e8e6] px-3 py-2.5 text-center text-sm text-[#1a1c1b] outline-none border-b border-[#775a19]"
+                            className="admin-hours-input w-full bg-[#e9e8e6] px-3 py-2.5 text-center text-sm text-[#1a1c1b] outline-none border-b border-[#775a19]"
                           />
-                          <span className="text-sm text-[#5f5e5e] text-center">–</span>
+                          <span className="admin-hours-separator text-sm text-[#5f5e5e] text-center">–</span>
                           <input
                             type="time"
                             value={row.closesAt}
                             onChange={(e) => setOperatingHours((current) => current.map((item) => (
                               item.day === row.day ? { ...item, closesAt: e.target.value } : item
                             )))}
-                            className="w-full bg-[#e9e8e6] px-3 py-2.5 text-center text-sm text-[#1a1c1b] outline-none border-b border-[#775a19]"
+                            className="admin-hours-input w-full bg-[#e9e8e6] px-3 py-2.5 text-center text-sm text-[#1a1c1b] outline-none border-b border-[#775a19]"
                           />
                         </div>
                       ))}
@@ -3119,7 +3939,7 @@ export default function HouseApp() {
 
       {/* ── Menu editor modal ── */}
       {editingProduct ? (
-        <div className="admin-modal-backdrop fixed inset-0 z-[55] flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm" onClick={() => setEditingProduct(null)}>
+        <div className="admin-modal-backdrop fixed inset-0 z-[55] flex items-center justify-center p-4" onClick={() => setEditingProduct(null)}>
           <div className="admin-menu-modal w-full max-w-2xl bg-white rounded-lg shadow-[0_20px_60px_rgba(26,28,27,0.2)] max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="admin-menu-modal-header p-6 border-b border-[#f4f3f1] flex items-start justify-between gap-4">
               <div>
@@ -3140,7 +3960,6 @@ export default function HouseApp() {
                 { label: 'Item Name', key: 'name' as const },
                 { label: 'Category', key: 'category' as const },
                 { label: 'Price', key: 'price' as const },
-                { label: 'Image URL', key: 'image' as const },
               ] as { label: string; key: keyof MenuEditorState }[]).map((field) => (
                 <UnderlineInput
                   key={field.key} id={field.key} label={field.label}
@@ -3148,6 +3967,43 @@ export default function HouseApp() {
                   onChange={(v) => setEditingProduct((c) => c ? { ...c, [field.key]: v } : c)}
                 />
               ))}
+              <div>
+                <UnderlineInput
+                  id="image"
+                  label="Image URL"
+                  value={editingProduct.image}
+                  placeholder="Paste image URL or choose from device"
+                  onChange={(v) => setEditingProduct((c) => c ? { ...c, image: v } : c)}
+                />
+              </div>
+              <div>
+                <label className="block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">Upload Image</label>
+                <button
+                  className="admin-menu-upload-button"
+                  disabled={isProcessingMenuImage}
+                  onClick={openMenuImagePicker}
+                  type="button"
+                >
+                  <span className="admin-menu-upload-icon material-symbols-outlined">add_photo_alternate</span>
+                  <span className="admin-menu-upload-copy">
+                    <span>{isProcessingMenuImage ? 'Processing photo...' : 'Choose Food Photo'}</span>
+                    <small>{Capacitor.isNativePlatform() ? 'Uses native iPad Photos picker' : 'Works with browser file upload'}</small>
+                  </span>
+                  <span className="material-symbols-outlined text-[20px] text-[#775a19]">chevron_right</span>
+                </button>
+                <input
+                  ref={menuImageInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="sr-only"
+                  disabled={isProcessingMenuImage}
+                  onChange={(e) => {
+                    handleMenuImageUpload(e.target.files?.[0]);
+                    e.currentTarget.value = '';
+                  }}
+                />
+                <p className="mt-2 font-['Manrope'] text-[11px] leading-5 text-[#4e4639]/70">Images are compressed before save so the same asset works on web, iPad, and Android tablet.</p>
+              </div>
               {editingProduct.image?.trim() ? (
                 <div className="md:col-span-2">
                   <label className="block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold mb-2">Image Preview</label>
@@ -3172,22 +4028,32 @@ export default function HouseApp() {
                   onChange={(v) => setEditingProduct((c) => c ? { ...c, unavailableReason: v } : c)}
                 />
               </div>
-              <label className="md:col-span-2 flex items-center gap-3 bg-[#f4f3f1] px-4 py-3 rounded font-['Manrope'] text-sm text-[#1a1c1b] cursor-pointer">
-                <input
-                  checked={editingProduct.isAvailable}
-                  className="w-4 h-4 accent-[#775a19]" type="checkbox"
-                  onChange={(e) => setEditingProduct((c) => c ? { ...c, isAvailable: e.target.checked } : c)}
-                />
-                Ready for guest ordering
-              </label>
+              <button
+                aria-checked={editingProduct.isAvailable}
+                className={`admin-menu-editor-availability md:col-span-2 ${editingProduct.isAvailable ? 'is-on' : 'is-off'}`}
+                onClick={() => setEditingProduct((c) => c ? { ...c, isAvailable: !c.isAvailable } : c)}
+                role="switch"
+                type="button"
+              >
+                <span className="admin-menu-editor-availability-copy">
+                  <strong>{editingProduct.isAvailable ? 'Available for guests' : 'Hidden from guests'}</strong>
+                  <span>{editingProduct.isAvailable ? 'ON: item can be ordered now.' : 'OFF: item remains saved but cannot be ordered.'}</span>
+                </span>
+                <span className="admin-menu-editor-availability-control">
+                  <span>{editingProduct.isAvailable ? 'ON' : 'OFF'}</span>
+                  <span className="admin-menu-editor-availability-track">
+                    <span />
+                  </span>
+                </span>
+              </button>
             </div>
             <div className="admin-menu-modal-footer px-6 pb-6 flex flex-wrap gap-3">
               <button
                 className="bg-[#775a19] text-white font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#775a19]/90 transition-colors shadow-[0_4px_14px_rgba(119,90,25,0.2)]"
-                disabled={isSavingProduct}
+                disabled={isSavingProduct || isProcessingMenuImage}
                 onClick={() => saveProduct(editingProduct)} type="button"
               >
-                {isSavingProduct ? 'Saving...' : 'Save Item'}
+                {isSavingProduct ? 'Saving...' : isProcessingMenuImage ? 'Processing...' : 'Save Item'}
               </button>
               <button
                 className="border border-[#d1c5b4]/50 text-[#4e4639] font-['Manrope'] text-xs uppercase tracking-widest font-semibold px-5 py-3 rounded hover:bg-[#f4f3f1] transition-colors"
@@ -3200,7 +4066,7 @@ export default function HouseApp() {
         </div>
       ) : null}
       {staffEditor ? (
-        <div className="admin-modal-backdrop fixed inset-0 z-[55] flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm" onClick={() => setStaffEditor(null)}>
+        <div className="admin-modal-backdrop fixed inset-0 z-[55] flex items-center justify-center p-4" onClick={() => setStaffEditor(null)}>
           <div className="admin-staff-modal w-full max-w-2xl rounded-[22px] bg-white shadow-[0_20px_60px_rgba(26,28,27,0.2)] max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="admin-menu-modal-header flex items-start justify-between gap-4 border-b border-[#f4f3f1] p-6">
               <div>
@@ -3282,27 +4148,40 @@ export default function HouseApp() {
         </div>
       ) : null}
       {confirmDialog ? (
-        <div className="admin-modal-backdrop fixed inset-0 z-[60] flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm" onClick={() => setConfirmDialog(null)}>
-          <div className="w-full max-w-sm rounded-2xl bg-white shadow-[0_20px_60px_rgba(26,28,27,0.24)] p-7" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center gap-3 mb-4">
-              <span className="material-symbols-outlined text-[#ba1a1a] text-[22px]">warning</span>
-              <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">{confirmDialog.title}</h3>
+        <div
+          className="admin-modal-backdrop admin-confirm-backdrop fixed inset-0 z-[60] flex items-center justify-center p-4"
+          onClick={() => { if (!isConfirmingDialog) setConfirmDialog(null); }}
+        >
+          <div className="admin-confirm-modal w-full max-w-sm rounded-2xl bg-white shadow-[0_20px_60px_rgba(26,28,27,0.24)] p-7" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="admin-confirm-title">
+            <div className="admin-confirm-header flex items-center gap-3 mb-4">
+              <span className="admin-confirm-icon material-symbols-outlined text-[#ba1a1a] text-[22px]">{confirmDialog.icon || 'warning'}</span>
+              <div>
+                <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#ba1a1a]">Manager confirmation</p>
+                <h3 id="admin-confirm-title" className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">{confirmDialog.title}</h3>
+              </div>
             </div>
-            <p className="font-['Manrope'] text-sm text-[#4e4639] leading-relaxed mb-7">{confirmDialog.message}</p>
-            <div className="flex gap-3 justify-end">
+            <div className="admin-confirm-copy">
+              <p className="font-['Manrope'] text-sm font-semibold text-[#1a1c1b] leading-relaxed">{confirmDialog.message}</p>
+              {confirmDialog.detail ? (
+                <p className="mt-3 font-['Manrope'] text-sm text-[#4e4639] leading-relaxed">{confirmDialog.detail}</p>
+              ) : null}
+            </div>
+            <div className="admin-confirm-actions flex gap-3 justify-end">
               <button
                 type="button"
-                className="rounded-[14px] border border-[#d1c5b4]/50 px-5 py-2.5 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] text-[#4e4639] hover:bg-[#f4f3f1] transition-colors"
+                className="admin-confirm-cancel rounded-[14px] border border-[#d1c5b4]/50 px-5 py-2.5 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] text-[#4e4639] hover:bg-[#f4f3f1] transition-colors"
+                disabled={isConfirmingDialog}
                 onClick={() => setConfirmDialog(null)}
               >
-                Cancel
+                {confirmDialog.cancelLabel || 'Cancel'}
               </button>
               <button
                 type="button"
-                className="rounded-[14px] bg-[#ba1a1a] px-5 py-2.5 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] text-white hover:bg-[#93000a] transition-colors shadow-[0_8px_16px_rgba(186,26,26,0.2)]"
-                onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}
+                className="admin-confirm-execute rounded-[14px] bg-[#ba1a1a] px-5 py-2.5 font-['Manrope'] text-xs font-semibold uppercase tracking-[0.16em] text-white hover:bg-[#93000a] transition-colors shadow-[0_8px_16px_rgba(186,26,26,0.2)]"
+                disabled={isConfirmingDialog}
+                onClick={executeConfirmDialogAction}
               >
-                Confirm
+                {isConfirmingDialog ? 'Processing...' : confirmDialog.confirmLabel || 'Confirm'}
               </button>
             </div>
           </div>
