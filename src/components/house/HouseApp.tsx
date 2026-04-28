@@ -156,6 +156,21 @@ interface AlertPreference {
 const TERMINAL_STATUSES = new Set(['delivered', 'completed', 'cancelled']);
 const SLA_THRESHOLD_MS = 20 * 60 * 1000; // 20 minutes
 
+// State-machine compliance (agent_rule.txt): explicit states + terminal set
+const ORDER_STATES = {
+  INCOMING: 'incoming',
+  PREPARING: 'preparing',
+  READY: 'ready',
+  DELIVERED: 'delivered',
+  COMPLETED: 'completed',
+  CANCELLED: 'cancelled',
+} as const;
+
+// Pure guard — no side effects
+function isTerminalStatus(status: string): boolean {
+  return status === ORDER_STATES.DELIVERED || status === ORDER_STATES.COMPLETED || status === ORDER_STATES.CANCELLED;
+}
+
 const STATUS_COLORS: Record<string, string> = {
   incoming: 'bg-blue-50 text-blue-800',
   confirmed: 'bg-indigo-50 text-indigo-800',
@@ -333,7 +348,7 @@ function getOrderNextAction(status: string): { label: string; nextStatus: string
 }
 
 function isOrderSlaBreached(order: DashboardOrder): boolean {
-  if (!order.createdAt || TERMINAL_STATUSES.has(order.status)) return false;
+  if (!order.createdAt || isTerminalStatus(order.status)) return false;
   return Date.now() - order.createdAt.getTime() > SLA_THRESHOLD_MS;
 }
 
@@ -571,6 +586,7 @@ export default function HouseApp() {
   const [feedbackFilter, setFeedbackFilter] = useState<'all' | '5' | '4' | 'week'>('all');
   const [revenueRange, setRevenueRange] = useState<'daily' | 'weekly' | 'monthly'>('daily');
   const [ordersAttentionOnly, setOrdersAttentionOnly] = useState(false);
+  const [showAllOrders, setShowAllOrders] = useState(false);
   const [isOrderIntakePaused, setIsOrderIntakePaused] = useState(false);
   const [busyActionId, setBusyActionId] = useState<string | null>(null);
   const [isSavingProduct, setIsSavingProduct] = useState(false);
@@ -614,9 +630,17 @@ export default function HouseApp() {
     [orders],
   );
   const activeOrders = useMemo(
-    () => orders.filter((o) => !TERMINAL_STATUSES.has(o.status)),
+    () => orders.filter((o) => !isTerminalStatus(o.status)),
     [orders],
   );
+  const todayOrders = useMemo(() => {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    return activeOrders.filter((o) => {
+      if (!o.createdAt) return true;
+      return o.createdAt >= startOfToday;
+    });
+  }, [activeOrders]);
   const slaBreachedCount = useMemo(
     () => orders.filter(isOrderSlaBreached).length,
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -804,8 +828,9 @@ export default function HouseApp() {
     return revenueDistribution.filter((segment) => segment.label.toLowerCase().includes(queryText));
   }, [activeSearchQuery, activeTab, revenueDistribution]);
   const visibleOrders = useMemo(() => {
+    const pool = showAllOrders ? activeOrders : todayOrders;
     const queryText = activeTab === 'orders' ? activeSearchQuery : '';
-    return activeOrders.filter((order) => {
+    return pool.filter((order) => {
       if (ordersAttentionOnly && !(order.status === 'incoming' || !order.isRead || isOrderSlaBreached(order))) return false;
       if (!queryText) return true;
       return [
@@ -815,7 +840,7 @@ export default function HouseApp() {
         ...order.items.map((item) => item.name),
       ].some((value) => value.toLowerCase().includes(queryText));
     });
-  }, [activeOrders, activeSearchQuery, activeTab, ordersAttentionOnly]);
+  }, [todayOrders, activeOrders, showAllOrders, activeSearchQuery, activeTab, ordersAttentionOnly]);
   const visibleStaffAccounts = useMemo(() => {
     const queryText = (activeTab === 'settings' ? shellSearch : '').trim().toLowerCase();
     if (!queryText) return staffAccounts;
@@ -1124,6 +1149,26 @@ export default function HouseApp() {
     });
   }
 
+  async function clearOldOrders() {
+    if (!identity) return;
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const stale = orders.filter((o) => isTerminalStatus(o.status) && o.createdAt && o.createdAt < startOfToday);
+    if (stale.length === 0) {
+      showDashboardNotice('No completed orders from previous days to clear.');
+      return;
+    }
+    setConfirmDialog({
+      title: 'Clear Old Orders',
+      message: `Delete ${stale.length} completed order(s) from previous days? This cannot be undone.`,
+      onConfirm: async () => {
+        for (const o of stale) { await deleteDoc(doc(db, 'orders', o.id)); }
+        await logAudit('clear_old_orders', 'order', 'batch', { count: stale.length });
+        showDashboardNotice(`${stale.length} old order(s) cleared.`);
+      },
+    });
+  }
+
   function handleMessageGuest(order: DashboardOrder) {
     if (order.phoneNumber) {
       window.location.href = `sms:${order.phoneNumber}`;
@@ -1145,8 +1190,48 @@ export default function HouseApp() {
   }
 
   async function resolveFeedback(order: DashboardOrder) {
-    await markAsRead(order.id);
-    showDashboardNotice(`Follow-up for Suite ${order.roomNumber} marked for resolution.`);
+    if (!identity) return;
+    setBusyActionId(`resolve-${order.id}`);
+    try {
+      await updateDoc(doc(db, 'orders', order.id), {
+        isRead: true,
+        feedbackText: '',
+        feedbackSummary: '',
+        rating: null,
+        managerFollowUpRequested: false,
+        updatedAt: serverTimestamp(),
+      });
+      await logAudit('resolve_feedback', 'order', order.id, { room: order.roomNumber });
+      showDashboardNotice(`Feedback from Suite ${order.roomNumber} resolved and cleared.`);
+    } catch (err) {
+      console.error('Failed to resolve feedback', err);
+      showDashboardNotice('Could not resolve feedback. Check Firebase permissions.');
+    } finally {
+      setBusyActionId(null);
+    }
+  }
+
+  async function clearAllResolvedFeedback() {
+    if (!identity) return;
+    const resolved = feedbackOrders.filter((o) => o.isRead);
+    if (resolved.length === 0) {
+      showDashboardNotice('No resolved feedback to clear.');
+      return;
+    }
+    setConfirmDialog({
+      title: 'Clear Resolved Feedback',
+      message: `Clear feedback from ${resolved.length} resolved order(s)? The orders themselves are kept.`,
+      onConfirm: async () => {
+        for (const o of resolved) {
+          await updateDoc(doc(db, 'orders', o.id), {
+            feedbackText: '', feedbackSummary: '', rating: null,
+            managerFollowUpRequested: false, updatedAt: serverTimestamp(),
+          });
+        }
+        await logAudit('clear_resolved_feedback', 'order', 'batch', { count: resolved.length });
+        showDashboardNotice(`${resolved.length} resolved feedback record(s) cleared.`);
+      },
+    });
   }
 
   async function saveSettingsDraft() {
@@ -1941,20 +2026,36 @@ export default function HouseApp() {
                     <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight font-semibold">Live Orders</h2>
                     <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm tracking-wide">Currently monitoring active in-room dining requests.</p>
                   </div>
-                  <div className="flex gap-4">
+                  <div className="flex flex-wrap gap-3">
                     <button
-                      className="font-['Manrope'] text-sm font-semibold tracking-wide text-[#775a19] bg-[#c5a059]/20 px-6 py-2 rounded-full hover:bg-[#c5a059]/30 transition-colors"
+                      className="font-['Manrope'] text-sm font-semibold tracking-wide text-[#4e4639] bg-[#f4f3f1] px-5 py-2 rounded-full border border-[#e3e2e0] hover:bg-[#e9e8e6] transition-colors"
+                      onClick={() => setShowAllOrders((v) => !v)}
+                      type="button"
+                    >
+                      {showAllOrders ? 'Today Only' : 'All Orders'}
+                    </button>
+                    <button
+                      className="font-['Manrope'] text-sm font-semibold tracking-wide text-[#775a19] bg-[#c5a059]/20 px-5 py-2 rounded-full hover:bg-[#c5a059]/30 transition-colors"
                       onClick={toggleOrderPriorityFilter}
                       type="button"
                     >
-                      {ordersAttentionOnly ? 'All Orders' : 'Priority Filter'}
+                      {ordersAttentionOnly ? 'Show All' : 'Priority Filter'}
                     </button>
+                    <ManagerOnly role={identity.role}>
+                      <button
+                        className="font-['Manrope'] text-sm font-semibold tracking-wide text-[#ba1a1a] bg-red-50 px-5 py-2 rounded-full border border-red-100 hover:bg-red-100 transition-colors"
+                        onClick={clearOldOrders}
+                        type="button"
+                      >
+                        Clear Old
+                      </button>
+                    </ManagerOnly>
                     <button
-                      className={`font-['Manrope'] text-sm font-semibold tracking-wide text-white px-6 py-2 rounded hover:bg-[#775a19]/90 transition-colors ${isOrderIntakePaused ? 'bg-[#1a1c1b]' : 'bg-[#775a19]'}`}
+                      className={`font-['Manrope'] text-sm font-semibold tracking-wide text-white px-5 py-2 rounded hover:bg-[#775a19]/90 transition-colors ${isOrderIntakePaused ? 'bg-[#1a1c1b]' : 'bg-[#775a19]'}`}
                       onClick={toggleOrderIntake}
                       type="button"
                     >
-                      {isOrderIntakePaused ? 'Resume New Orders' : 'Pause New Orders'}
+                      {isOrderIntakePaused ? 'Resume' : 'Pause'}
                     </button>
                   </div>
                 </div>
@@ -2102,7 +2203,7 @@ export default function HouseApp() {
               <div className="admin-page admin-page-menu">
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-14 gap-6">
                   <div>
-                    <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight mb-2">Curated Offerings</h2>
+                    <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight font-semibold mb-2">Curated Offerings</h2>
                     <p className="font-['Manrope'] text-[#4e4639] max-w-md text-sm">Manage the culinary portfolio for in-room dining. Adjust availability to reflect real-time kitchen capacity.</p>
                   </div>
                   <button
@@ -2209,7 +2310,7 @@ export default function HouseApp() {
                 <div className="flex flex-col md:flex-row md:justify-between md:items-end mb-10 gap-6">
                   <div className="max-w-2xl">
                     <span className="uppercase tracking-[0.1em] text-xs font-bold text-[#775a19] mb-3 block font-['Manrope']">Guest Relations</span>
-                    <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight mb-3">Curated Feedback</h2>
+                    <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight font-semibold mb-3">Curated Feedback</h2>
                     <p className="font-['Manrope'] text-[#4e4639] text-base font-light leading-relaxed">Review recent dining experiences to maintain the exacting standards of our culinary service.</p>
                   </div>
                   <div className="flex gap-4 shrink-0">
@@ -2228,7 +2329,7 @@ export default function HouseApp() {
                 </div>
 
                 <div className="flex flex-wrap gap-3 mb-12 items-center justify-start">
-                  <div className="flex flex-wrap gap-3">
+                  <div className="flex flex-wrap gap-3 flex-1">
                     {[
                       { id: 'all' as const, label: 'All Ratings' },
                       { id: '5' as const, label: '5 Stars' },
@@ -2252,6 +2353,15 @@ export default function HouseApp() {
                       </button>
                     ))}
                   </div>
+                  <ManagerOnly role={identity.role}>
+                    <button
+                      type="button"
+                      onClick={clearAllResolvedFeedback}
+                      className="font-['Manrope'] text-xs font-semibold tracking-wide text-[#ba1a1a] bg-red-50 px-4 py-2 rounded-full border border-red-100 hover:bg-red-100 transition-colors shrink-0"
+                    >
+                      Dismiss All Resolved
+                    </button>
+                  </ManagerOnly>
                 </div>
 
                 {!dataLoaded ? (
@@ -2263,7 +2373,7 @@ export default function HouseApp() {
                   </div>
                 ) : (
                   <div className="space-y-8">
-                    <div className={`grid grid-cols-1 ${feedbackSideOrder ? 'xl:grid-cols-[1.45fr_0.7fr]' : ''} gap-8`}>
+                    <div className={`grid grid-cols-1 ${feedbackSideOrder ? 'lg:grid-cols-[1.45fr_0.7fr]' : ''} gap-8`}>
                       {feedbackHeroOrder ? (
                         <article className={`bg-white p-8 rounded relative group shadow-[0_10px_30px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/20 ${feedbackSideOrder ? 'lg:col-span-2' : ''}`}>
                           <div className="flex items-start justify-between gap-5">
@@ -2329,7 +2439,7 @@ export default function HouseApp() {
                             </div>
                             <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]">Suite {feedbackSideOrder.roomNumber}</span>
                           </div>
-                          <h3 className="font-['Noto_Serif'] text-lg text-[#1a1c1b] mb-3">
+                          <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b] mb-3">
                             {feedbackSideOrder.feedbackSummary || 'Guest experience note'}
                           </h3>
                           <p className="font-['Manrope'] text-[#4e4639] text-sm leading-relaxed mb-8 flex-grow">
@@ -2345,7 +2455,7 @@ export default function HouseApp() {
                       ) : null}
                     </div>
 
-                    {(feedbackIssueOrder || feedbackStoryOrder) ? <div className={`grid grid-cols-1 ${feedbackIssueOrder && feedbackStoryOrder ? 'xl:grid-cols-[0.7fr_1.3fr]' : ''} gap-8`}>
+                    {(feedbackIssueOrder || feedbackStoryOrder) ? <div className={`grid grid-cols-1 ${feedbackIssueOrder && feedbackStoryOrder ? 'lg:grid-cols-[0.7fr_1.3fr]' : ''} gap-8`}>
                       {feedbackIssueOrder ? (
                         <article className="bg-white p-8 rounded relative group shadow-[0_10px_30px_rgba(26,28,27,0.03)] border-l-4 border-[#ba1a1a]/50 flex flex-col">
                           <div>
@@ -2366,7 +2476,7 @@ export default function HouseApp() {
                               </div>
                               <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]">Suite {feedbackIssueOrder.roomNumber}</span>
                             </div>
-                            <h3 className="font-['Noto_Serif'] text-lg text-[#1a1c1b] mb-3">
+                            <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b] mb-3">
                               {feedbackIssueOrder.feedbackSummary || 'Review requires follow-up'}
                             </h3>
                             <p className="font-['Manrope'] text-[#4e4639] text-sm leading-relaxed mb-8 flex-grow">
@@ -2404,7 +2514,7 @@ export default function HouseApp() {
                                 ))}
                               </div>
                               <div className="mb-6 flex items-center justify-between gap-4">
-                                <h3 className="font-['Noto_Serif'] text-lg text-[#1a1c1b]">
+                                <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">
                                   {feedbackStoryOrder.feedbackSummary || 'Dining experience recap'}
                                 </h3>
                                 <span className="font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639] bg-[#f4f3f1] px-3 py-1 rounded">
@@ -2518,7 +2628,7 @@ export default function HouseApp() {
                     </div>
                   </div>
 
-                  <div className="w-full bg-white rounded-xl p-8 mb-12 shadow-[0_20px_40px_rgba(26,28,27,0.06)] min-h-[400px] flex flex-col">
+                  <div className="w-full bg-white rounded-xl p-8 mb-12 shadow-[0_20px_40px_rgba(26,28,27,0.06)] h-[280px] flex flex-col">
                     <div className="mb-8 flex items-center justify-between gap-4">
                       <h3 className="font-['Noto_Serif'] text-xl text-[#1a1c1b]">Revenue Trend</h3>
                       <button className="text-[#5f5e5e]" onClick={() => showDashboardNotice(`Revenue range: ${revenueRange}. Export Report downloads the current data set.`)} type="button" aria-label="Show revenue chart options">
@@ -2650,7 +2760,7 @@ export default function HouseApp() {
             {activeTab === 'handover' ? (
               <div className="admin-page admin-page-handover">
                 <div className="mb-10">
-                  <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight">Handover Notes</h2>
+                  <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight font-semibold">Handover Notes</h2>
                   <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm">Leave notes for the incoming shift to ensure service continuity.</p>
                 </div>
                 <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
@@ -2744,7 +2854,7 @@ export default function HouseApp() {
               <div className="admin-page admin-page-settings">
                 <div className="mb-16 flex justify-between items-end gap-6">
                   <div>
-                    <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight">General Settings</h2>
+                    <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight font-semibold">General Settings</h2>
                     <p className="font-['Manrope'] text-[#5f5e5e] mt-2 text-sm">Configure core operational parameters for in-room dining.</p>
                   </div>
                   <button
@@ -3009,7 +3119,7 @@ export default function HouseApp() {
 
       {/* ── Menu editor modal ── */}
       {editingProduct ? (
-        <div className="admin-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm" onClick={() => setEditingProduct(null)}>
+        <div className="admin-modal-backdrop fixed inset-0 z-[55] flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm" onClick={() => setEditingProduct(null)}>
           <div className="admin-menu-modal w-full max-w-2xl bg-white rounded-lg shadow-[0_20px_60px_rgba(26,28,27,0.2)] max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="admin-menu-modal-header p-6 border-b border-[#f4f3f1] flex items-start justify-between gap-4">
               <div>
@@ -3090,8 +3200,8 @@ export default function HouseApp() {
         </div>
       ) : null}
       {staffEditor ? (
-        <div className="admin-modal-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm" onClick={() => setStaffEditor(null)}>
-          <div className="admin-staff-modal w-full max-w-2xl rounded-[22px] bg-white shadow-[0_20px_60px_rgba(26,28,27,0.2)]" onClick={(e) => e.stopPropagation()}>
+        <div className="admin-modal-backdrop fixed inset-0 z-[55] flex items-center justify-center bg-[#1a1c1b]/50 p-4 backdrop-blur-sm" onClick={() => setStaffEditor(null)}>
+          <div className="admin-staff-modal w-full max-w-2xl rounded-[22px] bg-white shadow-[0_20px_60px_rgba(26,28,27,0.2)] max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="admin-menu-modal-header flex items-start justify-between gap-4 border-b border-[#f4f3f1] p-6">
               <div>
                 <p className="font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">Manager Controls</p>
