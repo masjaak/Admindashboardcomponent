@@ -2788,15 +2788,15 @@ export default function HouseApp() {
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
                   <div className="bg-white p-6 rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/10">
                     <p className="font-['Manrope'] text-xs tracking-widest text-[#5f5e5e] uppercase mb-1">Total Active</p>
-                    <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">0</p>
+                    <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{activeOrders.length}</p>
                   </div>
                   <div className="bg-white p-6 rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/10">
                     <p className="font-['Manrope'] text-xs tracking-widest text-[#5f5e5e] uppercase mb-1">Avg. Prep Time</p>
-                    <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">0 <span className="font-['Manrope'] text-lg text-[#5f5e5e]">min</span></p>
+                    <p className="font-['Noto_Serif'] text-3xl text-[#1a1c1b]">{averagePrepMinutes} <span className="font-['Manrope'] text-lg text-[#5f5e5e]">min</span></p>
                   </div>
                   <div className="bg-white p-6 rounded shadow-[0_8px_24px_rgba(26,28,27,0.03)] border border-[#d1c5b4]/10">
                     <p className="font-['Manrope'] text-xs tracking-widest text-[#5f5e5e] uppercase mb-1">Delayed</p>
-                    <p className="font-['Noto_Serif'] text-3xl text-[#ba1a1a]">0</p>
+                    <p className="font-['Noto_Serif'] text-3xl text-[#ba1a1a]">{slaBreachedCount}</p>
                   </div>
                 </div>
 
@@ -2816,7 +2816,7 @@ export default function HouseApp() {
                         }}
                       >
                         <span className="admin-order-queue-tab-label">{view.label}</span>
-                        <strong>{0}</strong>
+                        <strong>{orderQueueSummary[view.id]}</strong>
                         <small>{view.helper}</small>
                       </button>
                     );
@@ -2825,7 +2825,7 @@ export default function HouseApp() {
 
                 {!dataLoaded ? (
                   <LoadingSkeleton lines={4} />
-                ) : true ? (
+                ) : visibleOrders.length === 0 ? (
                   <div className={`${ELEVATED_PANEL_CLASS} p-12 text-center`}>
                     <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">restaurant</span>
                     <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">
