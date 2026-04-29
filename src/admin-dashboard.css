@@ -650,6 +650,10 @@ body,
   min-height: 16.25rem;
 }
 
+.admin-empty-state-card--orders {
+  min-height: 16rem;
+}
+
 .admin-empty-state-icon {
   width: 4.25rem;
   height: 4.25rem;

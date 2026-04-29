@@ -2832,11 +2832,29 @@ export default function HouseApp() {
                 {!dataLoaded ? (
                   <LoadingSkeleton lines={4} />
                 ) : visibleOrders.length === 0 ? (
-                  <div className={`${ELEVATED_PANEL_CLASS} p-12 text-center`}>
-                    <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">restaurant</span>
-                    <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">
-                      No {orderQueueView === 'active' ? 'active' : orderQueueView} orders match this queue.
-                    </p>
+                  <div className="admin-empty-state-shell">
+                    <div className="admin-empty-state-card admin-empty-state-card--orders">
+                      <span className="admin-empty-state-icon material-symbols-outlined">
+                        {orderQueueView === 'done' ? 'task_alt' : orderQueueView === 'cancelled' ? 'event_busy' : 'restaurant'}
+                      </span>
+                      <p className="admin-empty-state-eyebrow font-['Manrope']">
+                        {orderQueueView === 'done' ? 'Completed Queue' : orderQueueView === 'cancelled' ? 'Cancelled Queue' : 'Active Queue'}
+                      </p>
+                      <h3 className="admin-empty-state-title">
+                        {orderQueueView === 'done'
+                          ? 'No completed orders yet.'
+                          : orderQueueView === 'cancelled'
+                            ? 'No cancelled orders yet.'
+                            : 'No active orders right now.'}
+                      </h3>
+                      <p className="admin-empty-state-description font-['Manrope']">
+                        {orderQueueView === 'done'
+                          ? 'Delivered orders that reach the final handoff step will appear here for quick review and follow-up.'
+                          : orderQueueView === 'cancelled'
+                            ? 'Orders that are revoked, cancelled, or removed from service flow will collect here for audit visibility.'
+                            : 'New guest orders will appear here as soon as they enter the service flow, so the team can react quickly.'}
+                      </p>
+                    </div>
                   </div>
                 ) : (
                   <div className="space-y-6">
