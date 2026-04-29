@@ -41,7 +41,7 @@ import {
   getAdminGuestDisplayName,
   getOrderClockLabel,
 } from '../../admin/feedbackPresentation';
-import { buildRevenueExport } from '../../admin/revenue';
+import { buildRevenueExport, isOperationalRevenueOrder } from '../../admin/revenue';
 import { resolveAdminSession, type AdminRole } from '../../admin/session';
 
 type AdminTab = 'orders' | 'menu' | 'feedback' | 'revenue' | 'handover' | 'settings';
@@ -88,6 +88,7 @@ interface DashboardOrder {
   total: number;
   paymentMethod: string;
   isRead: boolean;
+  source: string;
   guestUid: string;
   accessTokenId: string;
   feedbackText: string;
@@ -701,6 +702,7 @@ function normalizeOrder(docId: string, data: Record<string, unknown>): Dashboard
     total: typeof data.total === 'number' ? data.total : 0,
     paymentMethod: typeof data.paymentMethod === 'string' ? data.paymentMethod : 'room',
     isRead: data.isRead === true,
+    source: typeof data.source === 'string' ? data.source : '',
     guestUid: typeof data.guestUid === 'string' ? data.guestUid : '',
     accessTokenId: typeof data.accessTokenId === 'string' ? data.accessTokenId : '',
     feedbackText: feedbackDetails && typeof feedbackDetails.comment === 'string'
@@ -1008,8 +1010,12 @@ export default function HouseApp() {
     () => getRevenuePeriodBounds(revenueAnchorDate, revenueRange),
     [revenueAnchorDate, revenueRange],
   );
+  const operationalRevenueOrders = useMemo(
+    () => orders.filter((order) => isOperationalRevenueOrder(order)),
+    [orders],
+  );
   const revenueRows = useMemo(
-    () => orders
+    () => operationalRevenueOrders
       .filter((order) => ['delivered', 'completed'].includes(order.status))
       .filter((order) => isWithinRange(order.createdAt, revenuePeriodBounds.currentStart, revenuePeriodBounds.currentEnd))
       .map((order) => ({
@@ -1019,10 +1025,10 @@ export default function HouseApp() {
         total: order.total,
         createdAt: order.createdAt as Date,
       })),
-    [orders, revenuePeriodBounds],
+    [operationalRevenueOrders, revenuePeriodBounds],
   );
   const previousRevenueRows = useMemo(
-    () => orders
+    () => operationalRevenueOrders
       .filter((order) => ['delivered', 'completed'].includes(order.status))
       .filter((order) => isWithinRange(order.createdAt, revenuePeriodBounds.previousStart, revenuePeriodBounds.previousEnd))
       .map((order) => ({
@@ -1032,19 +1038,19 @@ export default function HouseApp() {
         total: order.total,
         createdAt: order.createdAt as Date,
       })),
-    [orders, revenuePeriodBounds],
+    [operationalRevenueOrders, revenuePeriodBounds],
   );
   const revenueSummary = useMemo(() => ({
     kpi: {
       revenue: revenueRows.reduce((sum, row) => sum + row.total, 0),
       completedOrders: revenueRows.length,
-      cancelledOrders: orders.filter(
+      cancelledOrders: operationalRevenueOrders.filter(
         (order) => order.status === 'cancelled'
           && isWithinRange(order.createdAt, revenuePeriodBounds.currentStart, revenuePeriodBounds.currentEnd),
       ).length,
     },
     rows: revenueRows,
-  }), [orders, revenuePeriodBounds, revenueRows]);
+  }), [operationalRevenueOrders, revenuePeriodBounds, revenueRows]);
   const revenueOverview = useMemo(() => {
     const currentRevenue = revenueRows.reduce((sum, row) => sum + row.total, 0);
     const previousRevenue = previousRevenueRows.reduce((sum, row) => sum + row.total, 0);
@@ -1072,7 +1078,7 @@ export default function HouseApp() {
       return labels.map((label, index) => {
         const bucketStart = addDays(start, index * 7);
         const bucketEnd = index === labels.length - 1 ? addMonths(start, 1) : addDays(start, (index + 1) * 7);
-        const value = orders
+        const value = operationalRevenueOrders
           .filter((order) => ['delivered', 'completed'].includes(order.status))
           .filter((order) => isWithinRange(order.createdAt, bucketStart, bucketEnd))
           .reduce((sum, order) => sum + order.total, 0);
@@ -1085,16 +1091,16 @@ export default function HouseApp() {
     return Array.from({ length: totalPoints }, (_, index) => {
       const bucketStart = addDays(start, index);
       const bucketEnd = addDays(bucketStart, 1);
-      const value = orders
+      const value = operationalRevenueOrders
         .filter((order) => ['delivered', 'completed'].includes(order.status))
         .filter((order) => isWithinRange(order.createdAt, bucketStart, bucketEnd))
         .reduce((sum, order) => sum + order.total, 0);
       const label = bucketStart.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
       return { label, value };
     });
-  }, [orders, revenueAnchorDate, revenuePeriodBounds.currentStart, revenueRange]);
+  }, [operationalRevenueOrders, revenueAnchorDate, revenuePeriodBounds.currentStart, revenueRange]);
   const revenueLeaders = useMemo<RevenueMenuLeader[]>(() => {
-    const completedOrders = orders.filter((order) => (
+    const completedOrders = operationalRevenueOrders.filter((order) => (
       ['delivered', 'completed'].includes(order.status)
       && isWithinRange(order.createdAt, revenuePeriodBounds.currentStart, revenuePeriodBounds.currentEnd)
     ));
@@ -1112,9 +1118,9 @@ export default function HouseApp() {
       }
     }
     return Array.from(byItem.values()).sort((a, b) => b.revenue - a.revenue).slice(0, 4);
-  }, [orders, products, revenuePeriodBounds]);
+  }, [operationalRevenueOrders, products, revenuePeriodBounds]);
   const revenueDistribution = useMemo<RevenueSegment[]>(() => {
-    const completedOrders = orders.filter((order) => (
+    const completedOrders = operationalRevenueOrders.filter((order) => (
       ['delivered', 'completed'].includes(order.status)
       && isWithinRange(order.createdAt, revenuePeriodBounds.currentStart, revenuePeriodBounds.currentEnd)
     ));
@@ -1137,7 +1143,7 @@ export default function HouseApp() {
       }))
       .sort((a, b) => b.revenue - a.revenue)
       .slice(0, 3);
-  }, [orders, revenuePeriodBounds]);
+  }, [operationalRevenueOrders, revenuePeriodBounds]);
   const visibleRevenueLeaders = useMemo(() => {
     const queryText = activeTab === 'revenue' ? activeSearchQuery : '';
     if (!queryText) return revenueLeaders;
@@ -3064,9 +3070,13 @@ export default function HouseApp() {
                   {!dataLoaded ? (
                     <div className="col-span-full"><LoadingSkeleton lines={4} /></div>
                   ) : visibleProducts.length === 0 ? (
-                    <div className={`col-span-full ${ELEVATED_PANEL_CLASS} p-12 text-center`}>
-                      <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">menu_book</span>
-                      <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No items match your search.</p>
+                    <div className="col-span-full admin-empty-state-shell">
+                      <div className="admin-empty-state-card admin-empty-state-card--menu">
+                        <span className="admin-empty-state-icon material-symbols-outlined">menu_book</span>
+                        <p className="admin-empty-state-eyebrow font-['Manrope']">Menu Manager</p>
+                        <h3 className="admin-empty-state-title">No items match your search.</h3>
+                        <p className="admin-empty-state-description font-['Manrope']">Try another keyword or add a new creation so the catalog stays clean and easy to scan on iPad.</p>
+                      </div>
                     </div>
                   ) : null}
                 </div>
@@ -3138,9 +3148,13 @@ export default function HouseApp() {
                 {!dataLoaded ? (
                   <LoadingSkeleton lines={4} />
                 ) : filteredFeedbackOrders.length === 0 ? (
-                  <div className={`${ELEVATED_PANEL_CLASS} p-12 text-center`}>
-                    <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">reviews</span>
-                    <p className="font-['Manrope'] text-sm text-[#4e4639] mt-4">No guest feedback yet.</p>
+                  <div className="admin-empty-state-shell">
+                    <div className="admin-empty-state-card admin-empty-state-card--feedback">
+                      <span className="admin-empty-state-icon material-symbols-outlined">reviews</span>
+                      <p className="admin-empty-state-eyebrow font-['Manrope']">Guest Relations</p>
+                      <h3 className="admin-empty-state-title">No guest feedback yet.</h3>
+                      <p className="admin-empty-state-description font-['Manrope']">Fresh ratings and guest notes will appear here once completed dining orders send feedback back into the dashboard.</p>
+                    </div>
                   </div>
                 ) : (
                   <div className="space-y-8">

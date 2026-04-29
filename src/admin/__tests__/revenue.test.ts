@@ -11,6 +11,7 @@ const orders = [
     status: 'completed',
     paymentMethod: 'room',
     createdAt: new Date('2026-04-26T05:00:00.000Z'),
+    guestUid: 'guest-1',
   },
   {
     id: 'order-2',
@@ -19,6 +20,7 @@ const orders = [
     status: 'delivered',
     paymentMethod: 'qris',
     createdAt: new Date('2026-04-26T08:30:00.000Z'),
+    accessTokenId: 'token-2',
   },
   {
     id: 'order-3',
@@ -27,6 +29,15 @@ const orders = [
     status: 'cancelled',
     paymentMethod: 'bank',
     createdAt: new Date('2026-04-26T09:00:00.000Z'),
+    guestUid: 'guest-3',
+  },
+  {
+    id: 'legacy-order',
+    roomNumber: '9999',
+    total: 450000,
+    status: 'completed',
+    paymentMethod: 'room',
+    createdAt: new Date('2026-04-26T06:15:00.000Z'),
   },
 ];
 
@@ -38,6 +49,13 @@ describe('summarizeRevenue', () => {
     expect(result.kpi.completedOrders).toBe(2);
     expect(result.kpi.cancelledOrders).toBe(1);
     expect(result.rows).toHaveLength(2);
+  });
+
+  it('ignores legacy orders that are not tied to an active guest session', () => {
+    const result = summarizeRevenue(orders, selectedDate);
+
+    expect(result.rows.some((row) => row.id === 'legacy-order')).toBe(false);
+    expect(result.kpi.revenue).toBe(425000);
   });
 });
 

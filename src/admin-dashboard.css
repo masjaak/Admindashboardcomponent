@@ -620,6 +620,74 @@ body,
   gap: 1rem;
 }
 
+.admin-empty-state-shell {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.admin-empty-state-card {
+  width: min(100%, 34rem);
+  min-height: 15.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: clamp(1.75rem, 3vw, 2.4rem);
+  text-align: center;
+  border-radius: 1.4rem;
+  border: 1px solid rgba(209, 197, 180, 0.38);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(244, 243, 241, 0.98)),
+    #fff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.86),
+    0 20px 44px rgba(26, 28, 27, 0.06);
+}
+
+.admin-empty-state-card--menu {
+  min-height: 16.25rem;
+}
+
+.admin-empty-state-icon {
+  width: 4.25rem;
+  height: 4.25rem;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  border-radius: 1.2rem;
+  background: linear-gradient(180deg, rgba(244, 243, 241, 0.98), rgba(233, 232, 230, 0.9));
+  border: 1px solid rgba(209, 197, 180, 0.34);
+  color: var(--am-primary);
+  font-size: 2rem !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+}
+
+.admin-empty-state-eyebrow {
+  margin: 0;
+  color: var(--am-primary);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+
+.admin-empty-state-title {
+  margin: 0;
+  color: var(--am-ink);
+  font-size: clamp(1.45rem, 2.6vw, 1.8rem);
+  line-height: 1.15;
+}
+
+.admin-empty-state-description {
+  max-width: 26rem;
+  margin: 0;
+  color: rgba(78, 70, 57, 0.88);
+  font-size: 0.92rem;
+  line-height: 1.7;
+}
+
 .admin-page-revenue > div:first-child {
   margin-bottom: 0 !important;
 }
@@ -1346,6 +1414,10 @@ body,
     min-height: 9.75rem;
   }
 
+  .admin-empty-state-card {
+    width: min(100%, 30rem);
+  }
+
   .admin-page-orders .space-y-6 > div {
     min-height: auto;
   }
@@ -1413,6 +1485,12 @@ body,
 
   .admin-revenue-kpi-card {
     min-height: 9.25rem;
+  }
+
+  .admin-empty-state-card {
+    width: 100%;
+    min-height: 14.5rem;
+    padding: 1.45rem;
   }
 
   .admin-confirm-modal {

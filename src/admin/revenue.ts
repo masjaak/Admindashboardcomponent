@@ -5,6 +5,9 @@ interface RevenueOrder {
   status: string;
   paymentMethod: string;
   createdAt: Date | null;
+  guestUid?: string;
+  accessTokenId?: string;
+  source?: string;
 }
 
 export interface RevenueRow {
@@ -39,8 +42,17 @@ function formatDateStamp(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+export function isOperationalRevenueOrder(order: RevenueOrder): boolean {
+  return Boolean(
+    (typeof order.guestUid === 'string' && order.guestUid.trim())
+    || (typeof order.accessTokenId === 'string' && order.accessTokenId.trim())
+    || order.source === 'spark_demo',
+  );
+}
+
 export function summarizeRevenue(orders: RevenueOrder[], selectedDate: Date): RevenueSummary {
   const rows = orders
+    .filter(isOperationalRevenueOrder)
     .filter((order) => order.createdAt instanceof Date && isSameDay(order.createdAt, selectedDate))
     .filter((order) => order.status === 'completed' || order.status === 'delivered')
     .map((order) => ({
@@ -52,7 +64,8 @@ export function summarizeRevenue(orders: RevenueOrder[], selectedDate: Date): Re
     }));
 
   const cancelledOrders = orders.filter(
-    (order) => order.createdAt instanceof Date
+    (order) => isOperationalRevenueOrder(order)
+      && order.createdAt instanceof Date
       && isSameDay(order.createdAt, selectedDate)
       && order.status === 'cancelled',
   ).length;
