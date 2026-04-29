@@ -18,7 +18,6 @@ import { User, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPas
 import { Capacitor } from '@capacitor/core';
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { auth, db, firebaseConfig } from '../../lib/firebase';
-import { createGuestQrToken } from '../../lib/adminAccess';
 import {
   createAdminUser,
   deleteAdminUser,
@@ -907,17 +906,11 @@ export default function HouseApp() {
 
   // Settings / QR
   const [hotelId, setHotelId] = useState('');
-  const [stayId, setStayId] = useState('');
-  const [roomNumber, setRoomNumber] = useState('');
-  const [expiresInMinutes, setExpiresInMinutes] = useState('720');
   const [operatingHours, setOperatingHours] = useState<OperatingHour[]>(DEFAULT_OPERATING_HOURS);
   const [taxRate, setTaxRate] = useState('');
   const [surchargeRate, setSurchargeRate] = useState('');
   const [alertPreferences, setAlertPreferences] = useState<AlertPreference[]>(DEFAULT_ALERT_PREFERENCES);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
-  const [tokenResult, setTokenResult] = useState<{ qrUrl: string; rawToken: string; expiresAt: string } | null>(null);
-  const [tokenStatus, setTokenStatus] = useState('');
-  const [isGeneratingToken, setIsGeneratingToken] = useState(false);
   const [revokingSessionId, setRevokingSessionId] = useState<string | null>(null);
   const [teamStatus, setTeamStatus] = useState('');
   const [staffEditor, setStaffEditor] = useState<StaffEditorState | null>(null);
@@ -2008,39 +2001,6 @@ export default function HouseApp() {
       }
     } finally {
       setBusyActionId(null);
-    }
-  }
-
-  async function handleGenerateQr() {
-    if (!hotelId.trim() || !stayId.trim() || !roomNumber.trim()) {
-      setTokenStatus('Hotel ID, stay ID, and room number are required.');
-      return;
-    }
-    setIsGeneratingToken(true);
-    setTokenStatus('');
-    try {
-      const result = await createGuestQrToken({
-        hotelId: hotelId.trim(), stayId: stayId.trim(), roomNumber: roomNumber.trim(),
-        baseUrl: window.location.origin, expiresInMinutes: Number(expiresInMinutes) || 720,
-      });
-      setTokenResult(result);
-      setTokenStatus('Guest QR generated. Copy the URL into the print or front-office workflow.');
-    } catch (err) {
-      console.error('Failed to create guest QR token', err);
-      setTokenStatus('Failed to create QR token.');
-    } finally {
-      setIsGeneratingToken(false);
-    }
-  }
-
-  async function copyTokenUrl() {
-    if (!tokenResult?.qrUrl) return;
-    try {
-      await navigator.clipboard.writeText(tokenResult.qrUrl);
-      setTokenStatus('Guest QR URL copied to clipboard.');
-    } catch (err) {
-      console.error('Failed to copy QR URL', err);
-      setTokenStatus('Could not copy automatically. Select and copy the Guest URL from Print Pack.');
     }
   }
 
@@ -3863,62 +3823,6 @@ export default function HouseApp() {
                       </section>
                     </ManagerOnly>
 
-                    <section className={`admin-qr-section ${ELEVATED_PANEL_CLASS} p-8`}>
-                      <div className="mb-6 flex items-center gap-3">
-                        <span className="material-symbols-outlined text-[#775a19] text-[22px]">qr_code_2</span>
-                        <h3 className="font-['Noto_Serif'] text-2xl text-[#1a1c1b]">Guest QR Access</h3>
-                      </div>
-                      <div className="grid gap-8 md:grid-cols-2">
-                        <div className="space-y-6">
-                          {[
-                            { label: 'Hotel ID', value: hotelId, onChange: setHotelId, placeholder: 'Required hotel ID' },
-                            { label: 'Stay ID', value: stayId, onChange: setStayId, placeholder: 'Guest stay ID' },
-                            { label: 'Room Number', value: roomNumber, onChange: setRoomNumber, placeholder: 'Room number' },
-                            { label: 'Expiry (minutes)', value: expiresInMinutes, onChange: setExpiresInMinutes, placeholder: 'Expiry window' },
-                          ].map((field) => (
-                            <div key={field.label}>
-                              <label className="mb-2 block font-['Manrope'] text-[10px] uppercase tracking-[0.2em] text-[#4e4639] font-semibold">{field.label}</label>
-                              <input type="text" value={field.value} placeholder={field.placeholder} onChange={(e) => field.onChange(e.target.value)} className="w-full rounded-[14px] bg-[#e9e8e6] px-4 py-3 font-['Manrope'] text-sm text-[#1a1c1b] outline-none" />
-                            </div>
-                          ))}
-                          <div className="border-t border-[#ebe2d6] my-2" />
-                          <div className="flex flex-wrap items-center gap-3">
-                            <button className="rounded-[14px] bg-[#1a1c1b] px-5 py-3 font-['Manrope'] text-xs uppercase tracking-widest text-white disabled:opacity-50" disabled={isGeneratingToken} onClick={handleGenerateQr} type="button">
-                              {isGeneratingToken ? 'Generating…' : 'Generate QR'}
-                            </button>
-                            {tokenResult?.qrUrl ? (
-                              <button className="rounded-[14px] border border-[#d1c5b4]/50 px-5 py-3 font-['Manrope'] text-xs uppercase tracking-widest text-[#4e4639]" onClick={copyTokenUrl} type="button">
-                                Copy URL
-                              </button>
-                            ) : null}
-                            {tokenStatus ? (
-                              <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold ${tokenStatus.toLowerCase().includes('active') || tokenStatus.toLowerCase().includes('success') || tokenStatus.toLowerCase().includes('generat') ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>
-                                {tokenStatus}
-                              </span>
-                            ) : null}
-                          </div>
-                        </div>
-                        <div className="bg-[#f4f3f1] rounded-[18px] p-6 border border-[#e3e2e0]">
-                          <h4 className="mb-4 font-['Noto_Serif'] text-base text-[#1a1c1b]">Print Pack</h4>
-                          {tokenResult ? (
-                            <div className="space-y-4 font-['Manrope'] text-sm">
-                              {[
-                                { label: 'Guest URL', value: tokenResult.qrUrl, mono: true },
-                                { label: 'Raw Token', value: tokenResult.rawToken, mono: true },
-                                { label: 'Expires At', value: new Date(tokenResult.expiresAt).toLocaleString(), mono: false },
-                              ].map((item) => (
-                                <div key={item.label}>
-                                  <p className="font-['Manrope'] text-[10px] uppercase tracking-widest text-[#4e4639]">{item.label}</p>
-                                  <p className={`mt-1.5 rounded-[12px] bg-white px-3 py-2 text-xs text-[#1a1c1b] leading-5 break-all ${item.mono ? 'font-mono' : ''}`}>{item.value}</p>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <p className="font-['Manrope'] text-sm leading-6 text-[#4e4639]">Generate a guest access link for the front-office print workflow.</p>
-                          )}
-                        </div>
-                      </div>
-                    </section>
                   </div>
 
                   <div className="space-y-6">
@@ -4105,7 +4009,7 @@ export default function HouseApp() {
             <div className="admin-menu-modal-body grid gap-5 p-6 md:grid-cols-2">
               {!hotelId.trim() ? (
                 <div className="md:col-span-2 rounded-[16px] border border-[#ba1a1a]/20 bg-[#ffdad6]/45 px-4 py-3 font-['Manrope'] text-sm text-[#93000a]">
-                  Set Hotel ID in Guest QR Access before creating staff access.
+                  Set Hotel ID in Settings before creating staff access.
                 </div>
               ) : null}
               <UnderlineInput id="staff-name" label="Full Name" value={staffEditor.name} onChange={(v) => setStaffEditor((current) => current ? { ...current, name: v } : current)} />
