@@ -3346,6 +3346,11 @@ export default function HouseApp() {
             ══════════════════════════════════════════ */}
             {activeTab === 'revenue' ? (
               <ManagerOnly role={identity.role}>
+                {!dataLoaded ? (
+                  <div className="admin-page admin-page-revenue">
+                    <LoadingSkeleton lines={4} />
+                  </div>
+                ) : (
                 <div className="admin-page admin-page-revenue">
                   <div className="mb-10">
                     <h2 className="font-['Noto_Serif'] text-4xl text-[#1a1c1b] tracking-tight font-semibold">Revenue</h2>
@@ -3443,8 +3448,8 @@ export default function HouseApp() {
                       >
                         {(() => {
                           const maxVal = Math.max(...revenueTrend.map((p) => p.value), 1);
-                          const todayLabel = new Date().toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
-                          const currentWeekIndex = Math.min(3, Math.floor((new Date().getDate() - 1) / 7));
+                          const todayLabel = revenueAnchorDate.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
+                          const currentWeekIndex = Math.min(3, Math.floor((revenueAnchorDate.getDate() - 1) / 7));
                           return revenueTrend.map((point) => {
                             const isActive = revenueRange === 'monthly'
                               ? point.label === `Week ${currentWeekIndex + 1}`
@@ -3541,7 +3546,18 @@ export default function HouseApp() {
                       </div>
                     </div>
                   </div>
+                  {revenueSummary.rows.length === 0 && dataLoaded ? (
+                    <div className="admin-empty-state-shell">
+                      <div className="admin-empty-state-card admin-empty-state-card--revenue">
+                        <span className="admin-empty-state-icon material-symbols-outlined">payments</span>
+                        <p className="admin-empty-state-eyebrow font-['Manrope']">Revenue</p>
+                        <h3 className="admin-empty-state-title">No revenue data for this period.</h3>
+                        <p className="admin-empty-state-description font-['Manrope']">Complete and delivered orders with payment will appear here once processed through the service workflow.</p>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
+                )}
               </ManagerOnly>
             ) : null}
 

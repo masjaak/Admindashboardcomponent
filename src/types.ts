@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 
 export type ViewState = 'login' | 'menu' | 'checkout' | 'tracking';
 export type Language = 'EN' | 'ID';

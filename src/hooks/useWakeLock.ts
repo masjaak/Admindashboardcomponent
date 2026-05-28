@@ -1,14 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 
-// Perhatikan ada kata 'export' langsung di depan 'const'
 export const useWakeLock = () => {
-  const wakeLock = useRef(null);
+  const wakeLock = useRef<WakeLockSentinel | null>(null);
   const [status, setStatus] = useState('inactive');
 
   useEffect(() => {
-    // Cek support browser
     if (typeof navigator === 'undefined' || !('wakeLock' in navigator)) {
-      console.warn('⚠️ HCS: Wake Lock API not supported.');
+      console.warn('Wake Lock API not supported.');
       return;
     }
 
@@ -16,13 +14,12 @@ export const useWakeLock = () => {
       try {
         wakeLock.current = await navigator.wakeLock.request('screen');
         setStatus('active');
-        console.log('✅ HCS: Screen Wake Lock ACTIVE');
+        console.log('Screen Wake Lock ACTIVE');
       } catch (err) {
-        // Error handling aman untuk Figma/Iframe
-        if (err.name === 'NotAllowedError') {
-          console.warn('⚠️ HCS WakeLock: Izin ditolak (Cek tab baru).');
+        if ((err as { name?: string }).name === 'NotAllowedError') {
+          console.warn('WakeLock: Permission denied.');
         } else {
-          console.error(`❌ HCS WakeLock Error: ${err.name}, ${err.message}`);
+          console.error(`WakeLock Error: ${(err as Error).name}, ${(err as Error).message}`);
         }
         setStatus('error');
       }
@@ -49,5 +46,3 @@ export const useWakeLock = () => {
 
   return status;
 };
-
-// JANGAN ADA export default DI BAWAH SINI

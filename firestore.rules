@@ -1,0 +1,281 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function adminProfile() {
+      return get(/databases/$(database)/documents/admin_users/$(request.auth.uid));
+    }
+
+    function isActiveAdmin() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/admin_users/$(request.auth.uid)) &&
+        adminProfile().data.get('active', true) == true;
+    }
+
+    function isActiveManager() {
+      return isActiveAdmin() && adminProfile().data.role == 'manager';
+    }
+
+    function stayDoc(stayId) {
+      return get(/databases/$(database)/documents/guest_stays/$(stayId));
+    }
+
+    function stayExists(stayId) {
+      return exists(/databases/$(database)/documents/guest_stays/$(stayId));
+    }
+
+    function accessTokenDoc(tokenId) {
+      return get(/databases/$(database)/documents/guest_access_tokens/$(tokenId));
+    }
+
+    function accessTokenExists(tokenId) {
+      return exists(/databases/$(database)/documents/guest_access_tokens/$(tokenId));
+    }
+
+    function hasAccessTokenId() {
+      return request.resource.data.accessTokenId is string &&
+        request.resource.data.accessTokenId != '';
+    }
+
+    function isActiveStay(data) {
+      let hasStatusFields = data.keys().hasAny(['checkedIn', 'active', 'status']);
+      return !hasStatusFields ||
+        data.get('checkedIn', false) == true ||
+        data.get('active', false) == true ||
+        data.get('status', '') == 'active' ||
+        data.get('status', '') == 'checked_in' ||
+        data.get('status', '') == 'in_house';
+    }
+
+    function validDemoAccessToken() {
+      let stay = stayDoc(request.resource.data.stayId);
+
+      return stayExists(request.resource.data.stayId) &&
+        stay.data.roomNumber == request.resource.data.roomNumber &&
+        isActiveStay(stay.data) &&
+        (
+          !hasAccessTokenId() ||
+          (
+            accessTokenExists(request.resource.data.accessTokenId) &&
+            accessTokenDoc(request.resource.data.accessTokenId).data.status == 'active' &&
+            accessTokenDoc(request.resource.data.accessTokenId).data.expiresAt > request.time &&
+            accessTokenDoc(request.resource.data.accessTokenId).data.stayId == request.resource.data.stayId &&
+            accessTokenDoc(request.resource.data.accessTokenId).data.roomNumber == request.resource.data.roomNumber
+          )
+        );
+    }
+
+    function validDemoOrderCreateShape() {
+      let keys = request.resource.data.keys();
+
+      return keys.hasAll([
+        'accessTokenId',
+        'hotelId',
+        'stayId',
+        'roomNumber',
+        'lastName',
+        'lastNameNormalized',
+        'phoneNumber',
+        'phoneNumberNormalized',
+        'items',
+        'subtotal',
+        'tax',
+        'total',
+        'paymentMethod',
+        'status',
+        'createdAt',
+        'updatedAt',
+        'isRead',
+        'source'
+      ]) &&
+      keys.hasOnly([
+        'accessTokenId',
+        'hotelId',
+        'stayId',
+        'roomNumber',
+        'lastName',
+        'lastNameNormalized',
+        'phoneNumber',
+        'phoneNumberNormalized',
+        'items',
+        'subtotal',
+        'tax',
+        'total',
+        'paymentMethod',
+        'selectedBank',
+        'hasPaymentProof',
+        'status',
+        'createdAt',
+        'updatedAt',
+        'isRead',
+        'source'
+      ]) &&
+      request.resource.data.items.size() > 0 &&
+      request.resource.data.status == 'incoming' &&
+      request.resource.data.isRead == false &&
+      request.resource.data.source == 'spark_demo';
+    }
+
+    function adminOrderWorkflowUpdateOnly() {
+      return request.resource.data.keys().hasOnly([
+        'accessTokenId',
+        'guestUid',
+        'hotelId',
+        'stayId',
+        'roomNumber',
+        'lastName',
+        'lastNameNormalized',
+        'phoneNumber',
+        'phoneNumberNormalized',
+        'items',
+        'subtotal',
+        'tax',
+        'total',
+        'paymentMethod',
+        'selectedBank',
+        'hasPaymentProof',
+        'status',
+        'createdAt',
+        'updatedAt',
+        'isRead',
+        'source',
+        'rating',
+        'feedback',
+        'review',
+        'reviewSummary',
+        'feedbackDetails',
+        'isFeedbackSubmitted',
+        'feedbackSubmittedAt'
+      ]) &&
+      request.resource.data.hotelId == resource.data.hotelId &&
+      request.resource.data.stayId == resource.data.stayId &&
+      request.resource.data.roomNumber == resource.data.roomNumber &&
+      request.resource.data.lastName == resource.data.lastName &&
+      request.resource.data.phoneNumber == resource.data.phoneNumber &&
+      request.resource.data.items == resource.data.items &&
+      request.resource.data.subtotal == resource.data.subtotal &&
+      request.resource.data.tax == resource.data.tax &&
+      request.resource.data.total == resource.data.total &&
+      request.resource.data.paymentMethod == resource.data.paymentMethod;
+    }
+
+    function guestFeedbackUpdateOnly() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'rating',
+        'feedback',
+        'review',
+        'reviewSummary',
+        'feedbackDetails',
+        'isFeedbackSubmitted',
+        'feedbackSubmittedAt'
+      ]);
+    }
+
+    match /guest_stays/{stayId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /guest_access_tokens/{tokenId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAll([
+        'hotelId',
+        'stayId',
+        'roomNumber',
+        'status',
+        'mode',
+        'createdAt',
+        'updatedAt',
+        'expiresAt'
+      ]) &&
+      request.resource.data.keys().hasOnly([
+        'hotelId',
+        'stayId',
+        'roomNumber',
+        'status',
+        'mode',
+        'createdAt',
+        'updatedAt',
+        'expiresAt'
+      ]) &&
+      request.resource.data.status == 'active' &&
+      request.resource.data.mode == 'spark_demo' &&
+      stayExists(request.resource.data.stayId) &&
+      stayDoc(request.resource.data.stayId).data.roomNumber == request.resource.data.roomNumber &&
+      isActiveStay(stayDoc(request.resource.data.stayId).data);
+      allow update: if isActiveManager() || (resource.data.mode == 'spark_demo' &&
+        request.resource.data.keys().hasOnly([
+          'hotelId',
+          'stayId',
+          'roomNumber',
+          'status',
+          'mode',
+          'createdAt',
+          'updatedAt',
+          'expiresAt',
+          'revokedAt',
+          'revokedBy',
+          'lastRedeemedAt',
+          'lastRedeemedRoomNumber'
+        ]) &&
+        request.resource.data.hotelId == resource.data.hotelId &&
+        request.resource.data.stayId == resource.data.stayId &&
+        request.resource.data.roomNumber == resource.data.roomNumber &&
+        request.resource.data.mode == resource.data.mode);
+      allow delete: if false;
+    }
+
+    match /guest_access_sessions/{userId} {
+      allow read: if isActiveAdmin();
+      allow write: if isActiveManager();
+    }
+
+    match /guest_access_logins/{logId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAll([
+        'accessTokenId',
+        'hotelId',
+        'stayId',
+        'roomNumber',
+        'lastName',
+        'lastNameNormalized',
+        'phoneNumber',
+        'source',
+        'createdAt'
+      ]);
+      allow update, delete: if false;
+    }
+
+    match /orders/{orderId} {
+      allow create: if validDemoOrderCreateShape();
+      allow read: if true;
+      allow update: if isActiveAdmin() || adminOrderWorkflowUpdateOnly() || guestFeedbackUpdateOnly();
+      allow delete: if isActiveManager();
+    }
+
+    match /products/{productId} {
+      allow read: if true;
+      allow create, update: if isActiveAdmin();
+      allow delete: if isActiveManager();
+    }
+
+    match /shiftNotes/{noteId} {
+      allow read, create: if isActiveAdmin();
+      allow update: if isActiveAdmin();
+      allow delete: if isActiveManager();
+    }
+
+    match /admin_users/{userId} {
+      allow read: if isActiveAdmin();
+      allow write: if isActiveManager();
+    }
+
+    match /rate_limits/{docId} {
+      allow read, write: if false;
+    }
+  }
+}
