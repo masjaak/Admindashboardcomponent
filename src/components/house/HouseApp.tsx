@@ -2983,68 +2983,57 @@ export default function HouseApp() {
                 </div>
 
                 {/* Product grid */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {visibleProducts.map((product) => (
-                    <article key={product.id} className="group bg-white rounded-lg overflow-hidden relative shadow-[0_4px_20px_rgba(26,28,27,0.02)] transition-transform duration-300 hover:-translate-y-1">
-                      <div className="h-64 overflow-hidden relative bg-[#e9e8e6]">
+                    <article key={product.id} className="group bg-white rounded-xl overflow-hidden relative shadow-[0_2px_12px_rgba(26,28,27,0.04)] transition-shadow duration-200 hover:shadow-[0_6px_24px_rgba(26,28,27,0.08)]">
+                      <div className="h-36 overflow-hidden relative bg-[#f4f3f1]">
                         {product.image ? (
-                          <img src={product.image} alt={product.name} className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" />
+                          <img src={product.image} alt={product.name} className="w-full h-full object-cover" />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center">
-                            <span className="material-symbols-outlined text-[#d1c5b4] text-[48px]">restaurant_menu</span>
+                            <span className="material-symbols-outlined text-[#d1c5b4] text-[32px]">restaurant_menu</span>
                           </div>
                         )}
-                        <div className="absolute inset-0 bg-gradient-to-t from-white/90 via-white/20 to-transparent" />
-                        <div className="absolute top-4 left-4 bg-white/85 backdrop-blur-md px-3 py-1 rounded-full flex items-center gap-2">
-                          <div className={`w-2 h-2 rounded-full ${product.isAvailable ? 'bg-[#4caf50]' : 'bg-[#ba1a1a]'}`} />
-                          <span className="font-['Manrope'] text-xs uppercase tracking-wider text-[#1a1c1b] font-semibold">
-                            {product.isAvailable ? 'Available' : 'Offline'}
-                          </span>
+                        <div className={`absolute top-2 right-2 px-2.5 py-0.5 rounded-full text-[10px] font-semibold font-['Manrope'] uppercase tracking-wider ${product.isAvailable ? 'bg-[#e8f5e9] text-[#2e7d32]' : 'bg-[#ffebee] text-[#c62828]'}`}>
+                          {product.isAvailable ? 'Available' : 'Offline'}
                         </div>
                       </div>
-                      <div className="p-6 relative -mt-8">
-                        <div className="flex justify-between items-start gap-4 mb-2">
-                          <h3 className="font-['Noto_Serif'] text-xl leading-tight text-[#1a1c1b] w-3/4">{product.name}</h3>
-                          <span className="font-['Noto_Serif'] text-lg text-[#775a19]">{formatIdr(product.price)}</span>
+                      <div className="p-4">
+                        <div className="flex justify-between items-start gap-3 mb-1">
+                          <h3 className="font-['Manrope'] text-sm font-semibold text-[#1a1c1b] leading-snug flex-1 min-w-0 truncate">{product.name}</h3>
+                          <span className="font-['Noto_Serif'] text-sm text-[#775a19] whitespace-nowrap">{formatIdr(product.price)}</span>
                         </div>
-                        <p className={`font-['Manrope'] text-sm text-[#4e4639] mb-6 line-clamp-2 ${product.isAvailable ? '' : 'opacity-75'}`}>{product.description}</p>
-                        <div className="flex justify-between items-center pt-4 border-t border-[#f4f3f1]">
-                          <div className="flex gap-1">
+                        <p className="font-['Manrope'] text-xs text-[#7c7366] mb-4 line-clamp-1">{product.description}</p>
+                        <div className="flex items-center justify-between pt-3 border-t border-[#f4f3f1]">
+                          <div className="flex items-center gap-1">
                             <button
-                              className="text-[#775a19] hover:text-[#4e3700] transition-colors p-2 rounded-full hover:bg-[#f4f3f1]"
+                              className="w-8 h-8 flex items-center justify-center rounded-lg text-[#775a19] hover:bg-[#f4f3f1] transition-colors"
                               onClick={() => setEditingProduct(getEditorState(product))} type="button"
+                              title="Edit"
                             >
-                              <span className="material-symbols-outlined text-[20px]">edit</span>
-                            </button>
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <button
-                              aria-label={`${product.isAvailable ? 'Disable' : 'Enable'} ${product.name}`}
-                              aria-checked={product.isAvailable}
-                              className={`admin-availability-switch ${product.isAvailable ? 'is-on' : 'is-off'}`}
-                              disabled={busyActionId === `product-${product.id}`}
-                              onClick={() => toggleProductAvailability(product)}
-                              role="switch"
-                              type="button"
-                            >
-                              <span className="admin-availability-switch-label">
-                                {product.isAvailable ? 'ON' : 'OFF'}
-                              </span>
-                              <span className="admin-availability-switch-track">
-                                <span className="admin-availability-switch-thumb" />
-                              </span>
+                              <span className="material-symbols-outlined text-[18px]">edit</span>
                             </button>
                             {identity.role === 'manager' ? (
                               <button
-                                aria-label={`Remove ${product.name}`}
-                                className="text-[#ba1a1a] hover:text-[#93000a] transition-colors p-2 rounded-full hover:bg-[#ffdad6]"
+                                className="w-8 h-8 flex items-center justify-center rounded-lg text-[#ba1a1a] hover:bg-[#ffebee] transition-colors"
                                 disabled={busyActionId === `delete-product-${product.id}`}
                                 onClick={() => deleteProduct(product.id)} type="button"
+                                title="Delete"
                               >
-                                <span className="material-symbols-outlined text-[20px]">delete</span>
+                                <span className="material-symbols-outlined text-[18px]">delete</span>
                               </button>
                             ) : null}
                           </div>
+                          <button
+                            aria-label={`${product.isAvailable ? 'Disable' : 'Enable'} ${product.name}`}
+                            className={`relative inline-flex h-6 w-10 shrink-0 rounded-full border transition-colors ${product.isAvailable ? 'border-[#4caf50] bg-[#4caf50]' : 'border-[#d1c5b4] bg-[#e3e2e0]'}`}
+                            disabled={busyActionId === `product-${product.id}`}
+                            onClick={() => toggleProductAvailability(product)}
+                            role="switch"
+                            type="button"
+                          >
+                            <span className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${product.isAvailable ? 'translate-x-[18px]' : 'translate-x-[1px]'}`} />
+                          </button>
                         </div>
                       </div>
                     </article>
