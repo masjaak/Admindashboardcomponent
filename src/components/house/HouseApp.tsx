@@ -2985,17 +2985,21 @@ export default function HouseApp() {
                 {/* Product grid */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {visibleProducts.map((product) => (
-                    <article key={product.id} className="group bg-white rounded-xl overflow-hidden relative shadow-[0_2px_12px_rgba(26,28,27,0.04)] transition-shadow duration-200 hover:shadow-[0_6px_24px_rgba(26,28,27,0.08)]">
-                      <div className="h-36 overflow-hidden relative bg-[#f4f3f1]">
+                    <article key={product.id} className="group bg-white rounded-xl overflow-hidden relative shadow-[0_4px_20px_rgba(26,28,27,0.02)] transition-shadow duration-200 hover:shadow-[0_8px_28px_rgba(26,28,27,0.06)]">
+                      <div className="h-40 overflow-hidden relative bg-[#e9e8e6]">
                         {product.image ? (
                           <img src={product.image} alt={product.name} className="w-full h-full object-cover" />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center">
-                            <span className="material-symbols-outlined text-[#d1c5b4] text-[32px]">restaurant_menu</span>
+                            <span className="material-symbols-outlined text-[#d1c5b4] text-[36px]">restaurant_menu</span>
                           </div>
                         )}
-                        <div className={`absolute top-2 right-2 px-2.5 py-0.5 rounded-full text-[10px] font-semibold font-['Manrope'] uppercase tracking-wider ${product.isAvailable ? 'bg-[#e8f5e9] text-[#2e7d32]' : 'bg-[#ffebee] text-[#c62828]'}`}>
-                          {product.isAvailable ? 'Available' : 'Offline'}
+                        <div className="absolute inset-0 bg-gradient-to-t from-white/80 via-transparent to-transparent" />
+                        <div className={`absolute top-3 left-3 px-2.5 py-0.5 rounded-full text-[10px] font-semibold font-['Manrope'] uppercase tracking-wider ${product.isAvailable ? 'bg-white/85 text-[#2e7d32]' : 'bg-white/85 text-[#c62828]'}`}>
+                          <span className="flex items-center gap-1.5">
+                            <span className={`w-1.5 h-1.5 rounded-full ${product.isAvailable ? 'bg-[#4caf50]' : 'bg-[#ba1a1a]'}`} />
+                            {product.isAvailable ? 'Available' : 'Offline'}
+                          </span>
                         </div>
                       </div>
                       <div className="p-4">
@@ -3005,34 +3009,40 @@ export default function HouseApp() {
                         </div>
                         <p className="font-['Manrope'] text-xs text-[#7c7366] mb-4 line-clamp-1">{product.description}</p>
                         <div className="flex items-center justify-between pt-3 border-t border-[#f4f3f1]">
-                          <div className="flex items-center gap-1">
+                          <div className="flex items-center gap-0.5">
                             <button
-                              className="w-8 h-8 flex items-center justify-center rounded-lg text-[#775a19] hover:bg-[#f4f3f1] transition-colors"
+                              className="w-7 h-7 flex items-center justify-center rounded-full text-[#775a19] hover:bg-[#f4f3f1] transition-colors"
                               onClick={() => setEditingProduct(getEditorState(product))} type="button"
                               title="Edit"
                             >
-                              <span className="material-symbols-outlined text-[18px]">edit</span>
+                              <span className="material-symbols-outlined text-[16px]">edit</span>
                             </button>
                             {identity.role === 'manager' ? (
                               <button
-                                className="w-8 h-8 flex items-center justify-center rounded-lg text-[#ba1a1a] hover:bg-[#ffebee] transition-colors"
+                                className="w-7 h-7 flex items-center justify-center rounded-full text-[#ba1a1a] hover:bg-[#ffebee] transition-colors"
                                 disabled={busyActionId === `delete-product-${product.id}`}
                                 onClick={() => deleteProduct(product.id)} type="button"
                                 title="Delete"
                               >
-                                <span className="material-symbols-outlined text-[18px]">delete</span>
+                                <span className="material-symbols-outlined text-[16px]">delete</span>
                               </button>
                             ) : null}
                           </div>
                           <button
                             aria-label={`${product.isAvailable ? 'Disable' : 'Enable'} ${product.name}`}
-                            className={`relative inline-flex h-6 w-10 shrink-0 rounded-full border transition-colors ${product.isAvailable ? 'border-[#4caf50] bg-[#4caf50]' : 'border-[#d1c5b4] bg-[#e3e2e0]'}`}
+                            aria-checked={product.isAvailable}
+                            className={`admin-availability-switch ${product.isAvailable ? 'is-on' : 'is-off'} !min-h-[1.75rem] !gap-[0.35rem] !py-[0.15rem] !px-[0.2rem] !pr-[0.15rem] !pl-[0.55rem]`}
                             disabled={busyActionId === `product-${product.id}`}
                             onClick={() => toggleProductAvailability(product)}
                             role="switch"
                             type="button"
                           >
-                            <span className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${product.isAvailable ? 'translate-x-[18px]' : 'translate-x-[1px]'}`} />
+                            <span className="admin-availability-switch-label !min-w-[1.35rem] !text-[0.58rem]">
+                              {product.isAvailable ? 'ON' : 'OFF'}
+                            </span>
+                            <span className="admin-availability-switch-track !w-[2.35rem] !h-[1.2rem]">
+                              <span className="admin-availability-switch-thumb !w-[0.85rem] !h-[0.85rem] !left-[0.15rem]" />
+                            </span>
                           </button>
                         </div>
                       </div>
