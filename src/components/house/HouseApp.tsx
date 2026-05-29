@@ -1288,16 +1288,10 @@ export default function HouseApp() {
     );
 
     const unsubProducts = onSnapshot(collection(db, 'products'), (snap) => {
-      const rawDocs = snap.docs.map((d) => ({ id: d.id, data: d.data() }));
-      console.log('📦 Products snapshot received:', snap.size, 'documents', rawDocs.map((d) => d.id));
-      if (snap.size > 0) {
-        console.log('📦 First product sample:', JSON.stringify(rawDocs[0]));
-      }
-      const normalized = snap.docs.map((d) => normalizeProduct(d.id, d.data() as Record<string, unknown>));
-      setProducts(mergeProducts(normalized));
+      setProducts(mergeProducts(snap.docs.map((d) => normalizeProduct(d.id, d.data() as Record<string, unknown>))));
       setDataLoaded(true);
     }, (err) => {
-      console.error('❌ Products subscription error:', err.code, err.message);
+      console.error('Products subscription error:', err.code, err.message);
       setDataLoaded(true);
     });
 

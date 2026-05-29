@@ -274,6 +274,11 @@ service cloud.firestore {
       allow write: if isActiveManager();
     }
 
+    match /adminSettings/{settingsId} {
+      allow read: if isActiveAdmin();
+      allow write: if isActiveManager();
+    }
+
     match /rate_limits/{docId} {
       allow read, write: if false;
     }
